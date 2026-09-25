@@ -6,7 +6,21 @@
 // The backend is the ONLY thing that talks to the database. The browser never
 // receives these keys, and Row Level Security (see supabase/schema.sql) keeps
 // the anon key from being useful to anyone who finds it.
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import dotenv from 'dotenv'
 import { createClient } from '@supabase/supabase-js'
+
+// ESM hoists all imports, so this module's body runs BEFORE server.js's
+// dotenv.config() call. Without loading .env here, process.env would still be
+// empty at this point and the client would always be "not configured".
+// (csvStore.js does the same thing for the same reason.)
+try {
+  const __dir = path.dirname(fileURLToPath(import.meta.url))
+  dotenv.config({ path: path.join(__dir, '..', '.env') }) // root .env first
+  dotenv.config({ path: path.join(__dir, '.env') })       // backend/.env second
+} catch { /* dotenv.config() without args will pick up a cwd .env */ }
+dotenv.config()
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim()
 const SUPABASE_ANON_KEY = (process.env.SUPABASE_ANON_KEY || '').trim()
