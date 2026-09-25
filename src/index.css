@@ -1,0 +1,128 @@
+@import "tailwindcss";
+
+@theme {
+  /* ── NICC brand: Deep Navy Blue ─────────────────────────── */
+  --color-navy-50: #eef3fb;
+  --color-navy-100: #d9e4f5;
+  --color-navy-200: #b3c9e8;
+  --color-navy-300: #84a6d6;
+  --color-navy-400: #4f7ab8;
+  --color-navy-500: #2f5b9a;
+  --color-navy-600: #23487e;
+  --color-navy-700: #1b3a66;
+  --color-navy-800: #142c4e;
+  --color-navy-900: #0e2039;
+  --color-navy-950: #0a182c;
+
+  /* ── Warm Amber gold highlights ─────────────────────────── */
+  --color-gold-50: #fffaeb;
+  --color-gold-100: #fff2c6;
+  --color-gold-200: #ffe488;
+  --color-gold-300: #ffd14a;
+  --color-gold-400: #ffbe20;
+  --color-gold-500: #f99e07;
+  --color-gold-600: #dd7302;
+  --color-gold-700: #b75006;
+  --color-gold-800: #943d0c;
+  --color-gold-900: #7a330d;
+
+  /* ── Clean slate grays (surface + text) ─────────────────── */
+  --color-surface: #f8fafc;
+  --color-ink: #0f172a;
+
+  /* ── Back-compat aliases (existing blue/amber classes) ──── */
+  --color-primary-50: var(--color-navy-50);
+  --color-primary-100: var(--color-navy-100);
+  --color-primary-500: var(--color-navy-500);
+  --color-primary-600: var(--color-navy-600);
+  --color-primary-700: var(--color-navy-700);
+  --color-accent-400: var(--color-gold-400);
+  --color-accent-500: var(--color-gold-500);
+
+  --font-display: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  font-family: var(--font-display);
+  background-color: var(--color-surface);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background: var(--color-gold-400);
+  color: var(--color-navy-950);
+}
+
+/* Reusable layout helper */
+/* Fullscreen campus image homepage */
+.homepage-background {
+  min-height: calc(100vh - 4rem);
+  background-color: #0e2039;
+  background-image: url('/images/campus-homepage.jpeg');
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: cover;
+}
+
+@media (min-width: 640px) {
+  .homepage-background {
+    min-height: calc(100vh - 5rem);
+  }
+}
+
+
+.container-shell {
+  width: 100%;
+  max-width: 80rem;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+@media (min-width: 640px) {
+  .container-shell {
+    padding-inline: 1.5rem;
+  }
+}
+@media (min-width: 1024px) {
+  .container-shell {
+    padding-inline: 2rem;
+  }
+}
+
+/* Brand helpers */
+.text-balance {
+  text-wrap: balance;
+}
+
+.card-ring {
+  border: 1px solid rgb(226 232 240);
+  box-shadow: 0 1px 2px rgb(10 24 44 / 0.06), 0 8px 24px -12px rgb(10 24 44 / 0.18);
+}
+
+/* PlanAVisitForm success animations */
+@keyframes planvisit-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes planvisit-pop {
+  0% { transform: scale(0.4); }
+  60% { transform: scale(1.15); }
+  100% { transform: scale(1); }
+}
+.planvisit-in { animation: planvisit-in 0.5s ease-out both; }
+.planvisit-pop { animation: planvisit-pop 0.45s ease-out both; }
+@media (prefers-reduced-motion: reduce) {
+  .planvisit-in, .planvisit-pop { animation: none; }
+}
+
+/* FontAwesome icon helpers — keep vector icons aligned with text */
+i.fas, i.far, i.fab {
+  line-height: 1;
+  vertical-align: -0.125em;
+}
+

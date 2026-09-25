@@ -1,0 +1,38 @@
+{
+  "name": "nicc-campus-ministry",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Nairobi International Christian Church Campus Ministry website",
+  "type": "module",
+  "scripts": {
+    "start": "node backend/server.js",
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "keywords": [
+    "nicc",
+    "campus-ministry",
+    "church",
+    "nairobi",
+    "react",
+    "vite",
+    "tailwindcss"
+  ],
+  "author": "NICC Campus Ministry",
+  "license": "MIT",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "csv-writer": "^1.6.0",
+    "express": "^5.2.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.3"
+  },
+  "devDependencies": {
+    "@tailwindcss/vite": "^4.3.3",
+    "@vitejs/plugin-react": "^6.1.1",
+    "tailwindcss": "^4.3.3",
+    "vite": "^8.3.0"
+  }
+}

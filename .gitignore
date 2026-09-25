@@ -1,0 +1,50 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+test-log.txt
+test-err.txt
+server-log.txt
+
+# Stray PowerShell/debug output that has been accidentally redirected into files
+$f
+'server-run.log'
+
+# Deps / build
+node_modules
+dist
+dist-ssr
+*.local
+
+# Local CSV backups (may contain credentials)
+*.csv.backup
+*.plaintext-backup
+
+# --- CSV database (personal data — never commit) -------------------------
+# backend/data/*.csv holds real visitors, messages, feedback, sign-ins and
+# bcrypt password hashes. The server auto-creates these files on first run
+# (see ensureDataFiles() in backend/csvStore.js), so the repo does not need them.
+backend/data/*.csv
+# ...but DO commit the header-only templates that document the schema.
+!backend/data/templates/
+!backend/data/templates/*.csv
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Env — never commit any real secrets (Gmail App Password, admin password, JWT secret)
+# Covers the root .env and nested ones such as backend/.env
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
