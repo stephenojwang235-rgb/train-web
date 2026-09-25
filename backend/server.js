@@ -21,6 +21,10 @@ import fs from 'node:fs'
 import nodemailer from 'nodemailer'
 import bcrypt from 'bcrypt'
 import {
+  isSupabaseConfigured, listUsers, findUserByEmail, insertUser,
+  emailExists, markUserVerified, updateUserPassword,
+} from './supabaseClient.js'
+import {
   DATA_DIR, VISITORS_CSV, SIGN_INS_CSV, MESSAGES_CSV, ADMINS_CSV, USERS_CSV, FEEDBACK_CSV, ANNOUNCEMENTS_CSV, VERIFICATION_CODES_CSV, ensureDataFiles,
   appendRow, readCsvAsJson, updatePasswordCsv, updateUserVerified, updateVerificationCode, markAnnouncementRead, escapeCsv,
 } from './csvStore.js'
@@ -204,9 +208,11 @@ function passwordMatches(stored, input) {
   return false
 }
 
-// Registered disciple accounts (data/users.csv). Loaded at boot and refreshed on
-// every Phase-1 credential check so edits/reseeds take effect immediately.
-function loadDisciples() {
+// Registered disciple accounts. Backed by the Supabase `users` table when
+// SUPABASE_URL + SUPABASE_ANON_KEY are configured, otherwise the legacy
+// users.csv. Both paths return the same shape, so callers are unaware of the
+// difference. See backend/supabaseClient.js.
+function loadDisciplesFromCsv() {
   try {
     return readCsvAsJson(USERS_CSV, ['name', 'email', 'password', 'campus', 'is_verified'])
   } catch {
@@ -214,14 +220,50 @@ function loadDisciples() {
   }
 }
 
-function findDisciple({ email = '', password = '' }) {
+/** Synchronous read. Only the CSV store can answer synchronously, so in Supabase
+ *  mode this returns the legacy file (or [] if it doesn't exist). New and
+ *  updated code should `await listDisciples()`, which always returns fresh data. */
+function loadDisciples() {
+  return loadDisciplesFromCsv()
+}
+
+/** Preferred accessor: always returns current data, from Supabase when available. */
+async function listDisciples() {
+  if (isSupabaseConfigured) {
+    try {
+      return await listUsers()
+    } catch (err) {
+      console.error('[supabase] listUsers failed, falling back to CSV:', err.message)
+      return loadDisciplesFromCsv()
+    }
+  }
+  return loadDisciplesFromCsv()
+}
+
+async function findDisciple({ email = '', password = '' }) {
   const cleanEmail = String(email).toLowerCase().trim()
   const pass = String(password)
   if (!cleanEmail || pass === '') return null
-  return loadDisciples().find((r) => {
+  const candidates = await listDisciples()
+  return candidates.find((r) => {
     const rowEmail = String(r.email || '').toLowerCase().trim()
     return rowEmail === cleanEmail && passwordMatches(String(r.password || ''), pass)
   }) || null
+}
+
+/** Look up by email only (no password) — used by the OTP verification routes. */
+async function findDiscipleByEmail(email) {
+  const cleanEmail = String(email).toLowerCase().trim()
+  if (!cleanEmail) return null
+  if (isSupabaseConfigured) {
+    try {
+      return await findUserByEmail(cleanEmail)
+    } catch (err) {
+      console.error('[supabase] findUserByEmail failed:', err.message)
+    }
+  }
+  const rows = await listDisciples()
+  return rows.find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail) || null
 }
 
 const VERIFICATION_TTL_MS = 15 * 60 * 1000
@@ -417,7 +459,7 @@ app.get('/api/admin/announcements', requireAdmin, (req, res) => {
 })
 
 async function sendAnnouncementEmails(announcement) {
-  const recipients = [...new Set(loadDisciples()
+  const recipients = [...new Set((await listDisciples())
     .map((row) => String(row.email || '').trim().toLowerCase())
     .filter((email) => EMAIL_REGEX.test(email)))]
   let sent = 0
@@ -535,7 +577,7 @@ app.post('/api/otp/request', async (req, res) => {
   }
 })
 
-app.post('/api/otp/verify', (req, res) => {
+app.post('/api/otp/verify', async (req, res) => {
   try {
     const { name = '', email = '', code = '' } = req.body || {}
     const cleanEmail = String(email).toLowerCase().trim()
@@ -650,10 +692,10 @@ app.post('/api/auth/verify-credentials', async (req, res) => {
       })
     }
 
-    // ---- Disciple path: verify Email + Password against data/users.csv ----
+    // ---- Disciple path: verify Email + Password against the users table ----
     console.log(`[auth] Not an admin. Searching disciples database for: ${lowerIdentity}`)
-    const allDisciples = loadDisciples()
-    console.log(`[auth] Total disciples loaded from users.csv: ${allDisciples.length}`)
+    const allDisciples = await listDisciples()
+    console.log(`[auth] Total disciples loaded from ${isSupabaseConfigured ? 'Supabase users table' : 'users.csv'}: ${allDisciples.length}`)
     const discipleMatch = allDisciples.find((r) => String(r.email || '').toLowerCase().trim() === lowerIdentity)
     if (discipleMatch) {
       console.log(`[auth] âœ… Disciple email FOUND: ${discipleMatch.email} (name: ${discipleMatch.name})`)
@@ -661,11 +703,11 @@ app.post('/api/auth/verify-credentials', async (req, res) => {
     } else {
       console.log(`[auth] âŒ No disciple found with email: ${lowerIdentity}`)
     }
-    const user = findDisciple({ email: identity, password: pass })
+    const user = await findDisciple({ email: identity, password: pass })
     if (!user) {
       // Check if email exists at all (without password match) for better debugging
-      const emailExists = allDisciples.some((r) => String(r.email || '').toLowerCase().trim() === lowerIdentity)
-      if (emailExists) {
+      const emailAlreadyOnFile = allDisciples.some((r) => String(r.email || '').toLowerCase().trim() === lowerIdentity)
+      if (emailAlreadyOnFile) {
         console.log(`[auth] âš ï¸  Email exists but PASSWORD MISMATCH for: ${lowerIdentity}`)
         return res.status(401).json({ ok: false, error: 'Invalid email or password.' })
       }
@@ -721,7 +763,7 @@ app.post('/api/auth/verify-credentials', async (req, res) => {
 // ---- UNIFIED PHASE 2: OTP verification for disciples ----
 // Cross-references the 6-digit code, writes the login log to data/sign_ins.csv,
 // issues an active-session profile token, and returns the disciple profile.
-app.post('/api/auth/verify-otp', (req, res) => {
+app.post('/api/auth/verify-otp', async (req, res) => {
   try {
     const { email = '', code = '' } = req.body || {}
     const cleanEmail = String(email).toLowerCase().trim()
@@ -765,7 +807,7 @@ app.post('/api/auth/verify-otp', (req, res) => {
       })
     }
 
-    const user = findDisciple({ email: cleanEmail }) || {}
+    const user = await findDiscipleByEmail(cleanEmail) || {}
     const displayName = String(user.name || record.name || '').trim() || cleanEmail.split('@')[0]
     const campus = String(user.campus || 'University of Nairobi - Chiromo Campus').trim()
 
@@ -849,15 +891,14 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'A valid email address is required.' })
     }
 
-    // Search both data sources for the email.
+    // Search the admins table and the users table (Supabase) for the email.
     let user = null
     let source = null
     const adminRows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password']) || []
     const adminRow = adminRows.find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail)
     if (adminRow) { user = adminRow; source = 'admin' }
     if (!user) {
-      const discipleRows = readCsvAsJson(USERS_CSV, ['name', 'email', 'password', 'campus']) || []
-      const discipleRow = discipleRows.find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail)
+      const discipleRow = await findDiscipleByEmail(cleanEmail)
       if (discipleRow) { user = discipleRow; source = 'disciple' }
     }
     if (!user) {
@@ -930,10 +971,18 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Code is valid â€” hash the new password with bcrypt (salt rounds = 12).
     const hashedPassword = await bcrypt.hash(String(newPassword), 12)
 
-    // Update the appropriate CSV file (write the hashed password back to disk).
+    // Code is valid — write the new bcrypt hash back to the users table
+    // (or the CSV files in the legacy local-only mode).
     let success = false
     if (record.role === 'admin') {
       success = updatePasswordCsv(ADMINS_CSV, cleanEmail, hashedPassword, 3)
+    } else if (isSupabaseConfigured) {
+      try {
+        success = await updateUserPassword(cleanEmail, hashedPassword)
+      } catch (updErr) {
+        console.error('[reset-password] updateUserPassword failed:', updErr.message)
+        success = false
+      }
     } else {
       success = updatePasswordCsv(USERS_CSV, cleanEmail, hashedPassword, 2)
     }
@@ -968,9 +1017,22 @@ app.post('/api/auth/signup', async (req, res) => {
   const password = String(req.body?.password || '')
   if (!EMAIL_REGEX.test(email)) return res.status(400).json({ ok: false, error: 'A valid email address is required.' })
   if (password.length < 6) return res.status(400).json({ ok: false, error: 'Password must be at least 6 characters.' })
-  if (loadDisciples().some((row) => String(row.email || '').toLowerCase().trim() === email)) return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please use Login instead.' })
+  const existing = await findDiscipleByEmail(email)
+  if (existing) return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please use Login instead.' })
   if (readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password']).some((row) => String(row.email || '').toLowerCase().trim() === email)) return res.status(409).json({ ok: false, error: 'This email is reserved. Please use Login instead.' })
-  appendRow(USERS_CSV, ['Disciple', email, await bcrypt.hash(password, 12), 'University of Nairobi — Chiromo Campus', 'false'])
+  const signupHash = await bcrypt.hash(password, 12)
+  if (isSupabaseConfigured) {
+    try {
+      await insertUser({ name: 'Disciple', email, passwordHash: signupHash, campus: 'University of Nairobi — Chiromo Campus', isVerified: false })
+    } catch (insErr) {
+      const msg = String(insErr?.message || '').toLowerCase()
+      if (msg.includes('23505') || msg.includes('duplicate')) return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please use Login instead.' })
+      console.error('[signup] insertUser failed:', insErr.message)
+      return res.status(500).json({ ok: false, error: 'Could not create the account. Try again.' })
+    }
+  } else {
+    appendRow(USERS_CSV, ['Disciple', email, signupHash, 'University of Nairobi — Chiromo Campus', 'false'])
+  }
   const result = await deliverAuthCode({ email, purpose: 'signup', name: 'Disciple' })
   if (!result.ok) return res.status(503).json({ ok: false, error: result.error })
   res.status(201).json(result)
@@ -978,7 +1040,7 @@ app.post('/api/auth/signup', async (req, res) => {
 
 app.post('/api/auth/resend-code', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const purpose = String(req.body?.purpose || '')
-  const user = loadDisciples().find((row) => String(row.email || '').toLowerCase().trim() === email)
+  const user = await findDiscipleByEmail(email)
   if (!user || !['signup', 'portal'].includes(purpose)) return res.status(404).json({ ok: false, error: 'Account not found.' })
   if (purpose === 'signup' && String(user.is_verified).toLowerCase() === 'true') return res.status(400).json({ ok: false, error: 'This account is already verified. Please use Login.' })
   if (purpose === 'portal' && String(user.is_verified).toLowerCase() !== 'true') return res.status(403).json({ ok: false, error: 'Verify your email address first.' })
@@ -991,7 +1053,7 @@ app.post('/api/auth/resend-code', async (req, res) => {
 // ---- Registration: create a new disciple account in data/users.csv ----
 app.post('/api/auth/portal-unlock', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const password = String(req.body?.password || '')
-  const user = loadDisciples().find((row) => String(row.email || '').toLowerCase().trim() === email)
+  const user = await findDiscipleByEmail(email)
   if (!user || !passwordMatches(user.password, password)) return res.status(401).json({ ok: false, error: 'Invalid email or password.' })
   // Valid credentials always advance to the code screen. An unverified legacy or
   // newly-created account uses the signup purpose so verification also upgrades
@@ -1016,19 +1078,23 @@ app.post('/api/auth/portal-unlock', async (req, res) => {
   res.json({ ...result, status: 'OTP_SENT', redirectTo: '/verify-otp', purpose, requiresVerification: true })
 })
 
-app.post('/api/auth/verify-signup', (req, res) => {
+app.post('/api/auth/verify-signup', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const code = String(req.body?.code || '').trim()
-  const user = loadDisciples().find((row) => String(row.email || '').toLowerCase().trim() === email)
+  const user = await findDiscipleByEmail(email)
   if (!user || !/^\d{6}$/.test(code) || !findVerificationCode({ email, purpose: 'signup', code })) return res.status(400).json({ ok: false, error: 'That code is invalid or expired. Request a new code.' })
-  updateUserVerified(USERS_CSV, email, true)
+  if (isSupabaseConfigured) {
+    try { await markUserVerified(email) } catch (e) { console.error('[verify-signup] markUserVerified failed:', e.message) }
+  } else {
+    updateUserVerified(USERS_CSV, email, true)
+  }
   const name = String(user.name || 'Disciple'); const token = crypto.randomBytes(24).toString('hex')
   discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); appendRow(SIGN_INS_CSV, [new Date().toISOString(), name, email])
   res.json({ ok: true, message: 'Account created successfully!', token, user: { id: discipleUserId(email), name, email, campus: user.campus, role: 'disciple' } })
 })
 
-app.post('/api/auth/verify-portal', (req, res) => {
+app.post('/api/auth/verify-portal', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const code = String(req.body?.code || '').trim()
-  const user = loadDisciples().find((row) => String(row.email || '').toLowerCase().trim() === email)
+  const user = await findDiscipleByEmail(email)
   if (!user || !/^\d{6}$/.test(code) || !findVerificationCode({ email, purpose: 'portal', code })) return res.status(400).json({ ok: false, error: 'That unlock code is invalid or expired. Request a new code.' })
   const name = String(user.name || 'Disciple'); const token = crypto.randomBytes(24).toString('hex')
   discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); appendRow(SIGN_INS_CSV, [new Date().toISOString(), name, email])
@@ -1059,11 +1125,21 @@ app.post('/api/auth/register', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Password must be at least 6 characters.' })
     }
 
-    // --- Check for duplicate email in users.csv ---
-    const existingDisciples = loadDisciples()
-    const duplicateInUsers = existingDisciples.some(
-      (r) => String(r.email || '').toLowerCase().trim() === cleanEmail
-    )
+    // --- Check for duplicate email in the users table ---
+    let duplicateInUsers = false
+    if (isSupabaseConfigured) {
+      try {
+        duplicateInUsers = await emailExists(cleanEmail)
+      } catch (err) {
+        console.error('[register] emailExists failed:', err.message)
+        return res.status(500).json({ ok: false, error: 'Could not verify the email address. Try again.' })
+      }
+    } else {
+      const existingDisciples = await listDisciples()
+      duplicateInUsers = existingDisciples.some(
+        (r) => String(r.email || '').toLowerCase().trim() === cleanEmail
+      )
+    }
     if (duplicateInUsers) {
       return res.status(409).json({
         ok: false,
@@ -1071,23 +1147,49 @@ app.post('/api/auth/register', async (req, res) => {
       })
     }
 
-    // --- Check for duplicate email in admins.csv (can't register as admin) ---
-    const adminRows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
-    const duplicateInAdmins = adminRows.some(
-      (r) => String(r.email || '').toLowerCase().trim() === cleanEmail
-    )
-    if (duplicateInAdmins) {
-      return res.status(409).json({
-        ok: false,
-        error: 'This email is reserved. Please log in instead.',
-      })
+    // --- Check for duplicate email in the users table (reserved admin emails) ---
+    if (isSupabaseConfigured) {
+      const alreadyRegistered = await emailExists(cleanEmail).catch(() => false)
+      if (alreadyRegistered) {
+        return res.status(409).json({ ok: false, error: 'This email is already registered. Please log in instead.' })
+      }
+    } else {
+      const adminRows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
+      const duplicateInAdmins = adminRows.some(
+        (r) => String(r.email || '').toLowerCase().trim() === cleanEmail
+      )
+      if (duplicateInAdmins) {
+        return res.status(409).json({ ok: false, error: 'This email is reserved. Please log in instead.' })
+      }
     }
 
     // --- Hash password with bcrypt (salt rounds = 12) ---
     const hashedPassword = await bcrypt.hash(String(password), 12)
 
-    // --- Append new user to users.csv ---
-    appendRow(USERS_CSV, [cleanName, cleanEmail, hashedPassword, cleanCampus || 'University of Nairobi â€” Chiromo Campus'])
+    // --- Persist the new user (Supabase `users` table, or users.csv fallback) ---
+    const defaultCampus = cleanCampus || 'University of Nairobi â€” Chiromo Campus'
+    if (isSupabaseConfigured) {
+      try {
+        await insertUser({
+          name: cleanName,
+          email: cleanEmail,
+          passwordHash: hashedPassword,
+          campus: defaultCampus,
+          isVerified: false,
+        })
+      } catch (insErr) {
+        // 23505 = unique_violation: someone registered the same email in the
+        // gap between the duplicate check and this insert.
+        const msg = String(insErr?.message || '').toLowerCase()
+        if (msg.includes('23505') || msg.includes('duplicate')) {
+          return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please log in instead.' })
+        }
+        console.error('[register] insertUser failed:', insErr.message)
+        return res.status(500).json({ ok: false, error: 'Could not create the account. Try again.' })
+      }
+    } else {
+      appendRow(USERS_CSV, [cleanName, cleanEmail, hashedPassword, defaultCampus])
+    }
 
     console.log(`[register] new disciple account created: ${cleanEmail} (${cleanName})`)
 

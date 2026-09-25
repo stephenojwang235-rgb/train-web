@@ -20,11 +20,21 @@ dist-ssr
 *.csv.backup
 *.plaintext-backup
 
-# --- CSV database (personal data — never commit) -------------------------
-# backend/data/*.csv holds real visitors, messages, feedback, sign-ins and
-# bcrypt password hashes. The server auto-creates these files on first run
-# (see ensureDataFiles() in backend/csvStore.js), so the repo does not need them.
+# --- CSV database (legacy local store — never commit) --------------------
+# The disciple/user records now live in Supabase. These CSVs are the old
+# local store, kept only as a fallback when SUPABASE_URL/ANON_KEY are unset.
+# They contain real names, emails, phone numbers and bcrypt hashes.
 backend/data/*.csv
+# Explicit belt-and-braces entries for the file the task calls out by name.
+users.csv
+**/users.csv
+backend/data/visitors.csv
+backend/data/admins.csv
+backend/data/sign_ins.csv
+backend/data/messages.csv
+backend/data/feedback.csv
+backend/data/announcements.csv
+backend/data/verification_codes.csv
 # ...but DO commit the header-only templates that document the schema.
 !backend/data/templates/
 !backend/data/templates/*.csv
