@@ -1,7 +1,12 @@
-// Shared helper: resolve backend base URL so POST /api/visit-plan never 404s.
-// - Dev (vite :5173 with proxy)        -> '' (relative, proxied to :5000)
-// - Single-server mode (:5000 + dist/) -> '' (relative, same origin)
-// - Any other host/port (preview/file) -> 'http://localhost:5000' fallback
+// Shared helper: resolve backend base URL so /api/* calls never 404.
+// Priority:
+//  1. VITE_API_URL (Vercel production -> https://nicc-campus-api.onrender.com)
+//  2. Dev (vite :5173 with proxy) or single-server mode (:5000) -> '' (same origin)
+//  3. Unknown NON-localhost host (e.g. a deployed preview without the env var)
+//     -> production Render API, so the live site keeps working
+//  4. Localhost fallback -> local Express API on :5000
+const PROD_API_URL = 'https://nicc-campus-api.onrender.com'
+
 function resolveBase() {
   const envBase = (import.meta.env.VITE_API_URL || '').trim()
   if (envBase) return envBase.replace(/\/$/, '')
@@ -11,10 +16,13 @@ function resolveBase() {
     if (port === '5173' || port === '5000' || protocol === 'file:') {
       if (port === '5173' || port === '5000') return ''
     }
-    // Unknown origin (e.g. vite preview :4173, static file) -> talk directly to local API
+    // Local machine without a configured env var -> talk directly to local API
     if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '') {
       return 'http://localhost:5000'
     }
+    // Any other host (Vercel preview/prod without env var, static file) ->
+    // target the cloud backend instead of erroring on :5000.
+    return PROD_API_URL
   } catch {
     // SSR / non-browser: stay relative
   }
@@ -36,11 +44,11 @@ export async function apiPost(path, body, options = {}) {
       body: JSON.stringify(body),
     })
   } catch {
-    throw new Error('Could not reach the server. Start the backend: cd backend then node server.js (:5000).')
+    throw new Error('Could not reach the cloud server. Check your connection or try again shortly.')
   }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
-    if (res.status === 404) throw new Error(`Endpoint not found (404): ${path}. Is the backend running on :5000?`)
+    if (res.status === 404) throw new Error(`Endpoint not found (404): ${path}.`)
     throw new Error(data.error || `Request failed (${res.status})`)
   }
   return data
@@ -51,7 +59,7 @@ export async function apiGet(path, options = {}) {
   try {
     res = await fetch(apiUrl(path), { headers: { ...(options.headers || {}) } })
   } catch {
-    throw new Error('Could not reach the server. Start the backend: cd backend then node server.js (:5000).')
+    throw new Error('Could not reach the cloud server. Check your connection or try again shortly.')
   }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) throw new Error(data.error || `Request failed (${res.status})`)
