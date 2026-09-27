@@ -18,7 +18,7 @@ import express from 'express'
 import cors from 'cors'
 import crypto from 'node:crypto'
 import fs from 'node:fs'
-import nodemailer from 'nodemailer'
+import { Resend } from 'resend'
 import bcrypt from 'bcrypt'
 import {
   isSupabaseConfigured, listUsers, findUserByEmail, insertUser,
@@ -40,134 +40,130 @@ const PORT = process.env.PORT || 5000
 app.use(cors())
 app.use(express.json())
 
-// ---- NICC SMTP mailer (env-based, no raw credentials in code) ----
-// Gmail + 2-Step Verification App Password: SMTP over SSL/TLS (port 465).
-// NOTE: this backend is ESM ("type": "module"), so we use `import`, not `require`.
-// NOTE: host must be exactly 'smtp.gmail.com' â€” '://gmail.com' is not a valid hostname.
-// Gmail credentials come from the environment — never hard-coded here.
-// GMAIL_APP_PASSWORD (root .env) is the primary source; EMAIL_PASS (backend/.env)
-// is kept as a fallback so existing local setups keep working.
-// App Passwords are printed by Google as "abcd efgh ijkl mnop", so all
-// whitespace is stripped before the 16-character validation below.
-const SMTP_USER = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim()
-const SMTP_PASS = String(process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASS || '').replace(/\s+/g, '')
-const SMTP_HOST = process.env.EMAIL_HOST || 'smtp.gmail.com'
-const SMTP_PORT = Number(process.env.EMAIL_PORT || 587)
-const SMTP_SECURE = String(process.env.EMAIL_SECURE || 'false').toLowerCase() === 'true'
+// ---- NICC email delivery via Resend HTTP API (env-based, no raw secrets) ----
+// Render's free tier blocks outbound SMTP ports (25/465/587), so nodemailer
+// can never connect from the cloud server. Resend sends over HTTPS (port 443),
+// which is always open. See https://resend.com - free tier = 3,000 emails/mo.
+//   EMAIL_API_KEY  = Resend API key (starts with "re_"; Dashboard > API Keys)
+//   EMAIL_FROM     = verified sender, e.g. "NICC Campus Ministry <noreply@yourdomain.com>"
+//                    Until a domain is verified, Resend only delivers to the
+//                    account owner's email - perfect for testing.
+const EMAIL_API_KEY = (process.env.EMAIL_API_KEY || '').trim()
+const EMAIL_FROM = (process.env.EMAIL_FROM || 'NICC Campus Ministry <onboarding@resend.dev>').trim()
 
-// App Password validation: Google App Passwords are always exactly 16 characters
-// (letters + digits, no spaces). If the value looks like a normal password or is
-// missing/wrong length, fail fast at startup so the problem is visible immediately.
-if (SMTP_USER && SMTP_PASS) {
-  if (SMTP_PASS.length !== 16) {
-    console.error(
-      `âŒ NICC SMTP configuration error: EMAIL_PASS must be a 16-character Google App Password, but got ${SMTP_PASS.length} character(s).`
-    )
-    console.error(
-      '   â†’ To create one: Google Account â†’ Security â†’ 2-Step Verification â†’ App passwords â†’ Mail / Other (Custom name) â†’ copy the 16-char code.'
-    )
-    console.error('   â†’ Do NOT use your normal Google account password â€” Gmail rejects it via SMTP.')
-    console.error('   → Current value was not logged; open backend/.env locally to inspect it.')
-    process.env.SMTP_VALIDATED = 'false'
+let resend = null
+if (EMAIL_API_KEY) {
+  if (!EMAIL_API_KEY.startsWith('re_')) {
+    console.error('NICC email configuration error: EMAIL_API_KEY should be a Resend key starting with "re_".')
+    console.error('   -> Resend Dashboard -> API Keys -> Create API Key -> copy the re_... value.')
+    process.env.EMAIL_API_VALIDATED = 'false'
   } else {
-    console.log(
-      `âœ… NICC SMTP: EMAIL_PASS is a 16-character App Password (validated at startup).`
-    )
-    process.env.SMTP_VALIDATED = 'true'
-  }
-}
-
-// ---- Resilient Gmail transport -------------------------------------------
-// Gmail publishes IPv4 *and* IPv6 SMTP hosts. Node prefers IPv6, and on a
-// network without IPv6 routing every send dies with:
-//   connect ENETUNREACH 2a00:1450:400c::6d:465
-// `family: 4` pins the socket to IPv4, which removes that whole class of failure.
-// A port-587 STARTTLS transport is kept as a fallback, because some networks and
-// firewalls block outbound 465 but happily allow 587.
-function buildTransport(port) {
-  return nodemailer.createTransport({
-    host: SMTP_HOST,
-    port,
-    secure: port === 465 || SMTP_SECURE,
-    requireTLS: port === 587, // 587 = STARTTLS upgrade required
-    family: 4, // force IPv4 (see note above)
-    auth: {
-      user: SMTP_USER, // resolves via backend/.env EMAIL_USER
-      pass: SMTP_PASS, // resolves via backend/.env EMAIL_PASS (App Password)
-    },
-    connectionTimeout: 15000,
-    greetingTimeout: 10000,
-    socketTimeout: 20000,
-  })
-}
-
-let mailer = null
-let fallbackMailer = null
-if (SMTP_USER && SMTP_PASS && process.env.SMTP_VALIDATED === 'true') {
-  try {
-    mailer = buildTransport(465)
-    fallbackMailer = buildTransport(587)
-    // Verification check: tests the SMTP connection on server startup.
-    mailer.verify((error) => {
-      if (error) {
-        console.log('âŒ Gmail SMTP Connection Error (port 465):', error?.message || error)
-        console.log('   â†’ Sends will automatically retry on port 587 (STARTTLS).')
-      } else {
-        console.log('âœ… Gmail SMTP Connection is ready to send OTP emails securely!')
-      }
-    })
-  } catch (mailErr) {
-    console.error('SMTP transport setup failed:', mailErr)
-    mailer = null
-    fallbackMailer = null
-  }
-} else if (SMTP_USER && SMTP_PASS) {
-  // SMTP_USER + SMTP_PASS present but validation failed (wrong length, etc.)
-  console.log(
-    ' NICC SMTP mailer NOT started: EMAIL_PASS failed validation (see error above). Fix backend/.env and restart.'
-  )
-} else {
-  console.log('NICC SMTP mailer NOT configured (missing EMAIL_USER / EMAIL_PASS in backend/.env).')
-}
-
-// ---- One send path for every OTP / notification email ---------------------
-// Central helper so retry behaviour, logging and the delivery result are
-// identical on all routes. Returns { ok: true } or { ok: false, error } â€” never throws.
-async function sendOtpEmail({ to, subject, text, html, tag = 'otp' }) {
-  if (!mailer || !SMTP_USER) {
-    console.log(`[${tag}] SMTP NOT available (mailer unset or EMAIL_USER missing) — verification code remains server-side; delivery must be retried.`)
-    return { ok: false, error: null }
-  }
-  const attempts = [
-    { label: '465 (SSL/TLS)', transport: mailer },
-    { label: '587 (STARTTLS)', transport: fallbackMailer },
-  ].filter((a) => a.transport)
-  let lastError = null
-  for (const attempt of attempts) {
     try {
-      console.log(`[${tag}] BEFORE sendMail: emailing ${to} via ${SMTP_USER} on port ${attempt.label}`)
-      await attempt.transport.sendMail({
-        from: `"NICC Campus Ministry" <${SMTP_USER}>`,
-        to, subject, text, html,
-      })
-      console.log(`[${tag}] AFTER sendMail SUCCESS: emailed ${to} via ${SMTP_USER} on port ${attempt.label}`)
-      return { ok: true }
+      resend = new Resend(EMAIL_API_KEY)
+      console.log(`NICC email: Resend HTTP API client ready (sender: ${EMAIL_FROM}).`)
+      process.env.EMAIL_API_VALIDATED = 'true'
     } catch (mailErr) {
-      lastError = mailErr
-      console.error(`[${tag}] sendMail FAILED on port ${attempt.label}:`)
-      console.error(`[${tag}]   error name   :`, mailErr?.name)
-      console.error(`[${tag}]   error code   :`, mailErr?.code)
-      console.error(`[${tag}]   error message:`, mailErr?.message)
+      console.error('Resend client setup failed:', mailErr)
+      resend = null
+      process.env.EMAIL_API_VALIDATED = 'false'
     }
   }
-  // Common Gmail SMTP errors seen here:
-  //   "Invalid login: 535-5.7.8 Username and Password not accepted."
-  //     â†’ App Password wrong/expired, or 2-Step Verification is not enabled.
-  //   "connect ENETUNREACH â€¦:465" / "Connection timeout"
-  //     â†’ firewall or IPv6-only route; IPv4 pinning + the 587 fallback cover most cases.
-  //   "Invalid sender"
-  //     â†’ EMAIL_USER doesn't match the Gmail account that owns the App Password.
-  return { ok: false, error: lastError }
+} else {
+  console.log('NICC email NOT configured (missing EMAIL_API_KEY in env). Set a Resend key to enable OTP emails.')
+  process.env.EMAIL_API_VALIDATED = 'false'
+}
+
+// ---- Legacy Gmail SMTP settings (kept for local dev only) -----------------
+// Local `node server.js` can still reach smtp.gmail.com:465 from your own
+// network, so the old variables are honoured as a fallback when no Resend key
+// is configured. On Render (SMTP ports blocked) they are ignored entirely.
+const SMTP_USER = (process.env.GMAIL_USER || process.env.EMAIL_USER || '').trim()
+const SMTP_PASS = String(process.env.GMAIL_APP_PASSWORD || process.env.EMAIL_PASS || '').replace(/\s+/g, '')
+const SMTP_AVAILABLE = Boolean(SMTP_USER && SMTP_PASS && SMTP_PASS.length === 16)
+if (SMTP_USER && SMTP_PASS && SMTP_PASS.length !== 16) {
+  console.error(
+    `NICC SMTP note: EMAIL_PASS is not a 16-char Google App Password (${SMTP_PASS.length} chars) - local SMTP fallback disabled; Resend will be used.`
+  )
+}
+// ---- One send path for every OTP / notification email ---------------------
+// Central helper so delivery behaviour, logging and the result are
+// identical on all routes. Returns { ok: true } or { ok: false, error } - never throws.
+//
+// Delivery order:
+//   1. Resend HTTP API (EMAIL_API_KEY) - works everywhere incl. Render free
+//      tier, because it is plain HTTPS on port 443.
+//   2. Legacy Gmail SMTP (local dev only) - dynamic import of nodemailer so the
+//      package is not even loaded on Render. Skipped automatically when the
+//      server runs in production (NODE_ENV=production) since those ports are
+//      blocked there.
+async function sendOtpEmail({ to, subject, text, html, tag = 'otp' }) {
+  const cleanTo = String(to || '').trim()
+  if (!cleanTo) return { ok: false, error: new Error('No recipient address') }
+
+  // --- Path 1: Resend HTTP API (primary, cloud-safe) ---
+  if (resend) {
+    try {
+      console.log(`[${tag}] BEFORE send: emailing ${cleanTo} via Resend API`)
+      const { data, error } = await resend.emails.send({
+        from: EMAIL_FROM,
+        to: [cleanTo],
+        subject,
+        text,
+        html,
+      })
+      if (error) throw new Error(error.message || 'Resend API error')
+      console.log(`[${tag}] AFTER send SUCCESS: emailed ${cleanTo} via Resend (id: ${data?.id || 'n/a'})`)
+      return { ok: true }
+    } catch (mailErr) {
+      console.error(`[${tag}] Resend send FAILED:`)
+      console.error(`[${tag}]   error name   :`, mailErr?.name)
+      console.error(`[${tag}]   error code   :`, mailErr?.code || mailErr?.statusCode)
+      console.error(`[${tag}]   error message:`, mailErr?.message)
+      // Common Resend errors:
+      //   "The from address ... must be a verified domain" -> verify a domain
+      //   at resend.com/domains, or keep EMAIL_FROM as onboarding@resend.dev
+      //   "You can only send to ..." -> unverified account: recipients limited
+      //   to the account owner until a domain is verified.
+      return { ok: false, error: mailErr }
+    }
+  }
+
+  // --- Path 2: legacy Gmail SMTP (local dev only) ---
+  // Production (Render) blocks SMTP ports, so don't even try there.
+  if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
+    console.log(`[${tag}] email NOT sent: EMAIL_API_KEY missing and SMTP is blocked on Render - verification code remains server-side.`)
+    return { ok: false, error: null }
+  }
+  if (!SMTP_AVAILABLE) {
+    console.log(`[${tag}] email NOT available (no EMAIL_API_KEY and no valid Gmail App Password) - verification code remains server-side; delivery must be retried.`)
+    return { ok: false, error: null }
+  }
+  try {
+    const { default: nodemailer } = await import('nodemailer')
+    const transport = nodemailer.createTransport({
+      host: 'smtp.gmail.com',
+      port: 465,
+      secure: true,
+      family: 4, // force IPv4 (Node prefers IPv6; many networks lack IPv6 routes)
+      auth: { user: SMTP_USER, pass: SMTP_PASS },
+      connectionTimeout: 15000,
+      greetingTimeout: 10000,
+      socketTimeout: 20000,
+    })
+    console.log(`[${tag}] BEFORE sendMail: emailing ${cleanTo} via Gmail SMTP (local fallback)`)
+    await transport.sendMail({
+      from: `"NICC Campus Ministry" <${SMTP_USER}>`,
+      to: cleanTo, subject, text, html,
+    })
+    console.log(`[${tag}] AFTER sendMail SUCCESS: emailed ${cleanTo} via Gmail SMTP`)
+    return { ok: true }
+  } catch (mailErr) {
+    console.error(`[${tag}] Gmail SMTP fallback FAILED:`)
+    console.error(`[${tag}]   error name   :`, mailErr?.name)
+    console.error(`[${tag}]   error code   :`, mailErr?.code)
+    console.error(`[${tag}]   error message:`, mailErr?.message)
+    return { ok: false, error: mailErr }
+  }
 }
 
 // Never return authentication codes in HTTP responses. This is intentionally
@@ -176,8 +172,8 @@ const REVEAL_OTP_IN_RESPONSE = false
 
 function smtpFailureMessage(lastSmtpError) {
   return lastSmtpError
-    ? `SMTP delivery failed: ${lastSmtpError?.message || lastSmtpError}`
-    : 'SMTP not configured â€” check EMAIL_USER / EMAIL_PASS in backend/.env and restart the backend.'
+    ? `Email delivery failed: ${lastSmtpError?.message || lastSmtpError}`
+    : 'Email not configured — set EMAIL_API_KEY (Resend) in the environment and restart the backend.'
 }
 
 // Single source of truth for "we verified you, but could not email the code".
@@ -1424,9 +1420,13 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`NICC backend on http://localhost:${PORT}`)
   console.log(`NICC on your network: http://192.168.100.5:${PORT} (use your current Wi-Fi IPv4 if different)`)
   console.log(`CSV store: ${DATA_DIR}`)
-  if (mailer && SMTP_USER) {
-    console.log(`NICC SMTP Node Mailer Initialized with ${SMTP_USER}`)
+  if (resend) {
+    console.log(`NICC email ready via Resend API (sender: ${EMAIL_FROM})`)
+  } else if (String(process.env.NODE_ENV || '').toLowerCase() === 'production') {
+    console.log('NICC email NOT configured: set EMAIL_API_KEY (Resend) - SMTP ports are blocked on Render.')
+  } else if (SMTP_AVAILABLE) {
+    console.log(`NICC email ready via Gmail SMTP fallback (local dev, ${SMTP_USER})`)
   } else {
-    console.log('NICC SMTP mailer NOT configured (missing EMAIL_USER / EMAIL_PASS in backend/.env).')
+    console.log('NICC email NOT configured (missing EMAIL_API_KEY; no valid Gmail App Password for local fallback).')
   }
 })

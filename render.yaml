@@ -42,7 +42,17 @@ services:
       # Legacy anon key kept for local-dev parity (Render never reads it now).
       - key: SUPABASE_ANON_KEY
         sync: false
-      # --- Gmail SMTP for OTP / announcement email ---
+      # --- Resend HTTP API email (REQUIRED for email on Render) ---
+      # Render's free tier blocks SMTP ports, so OTP/reset/announcement mail
+      # goes out over HTTPS via Resend. Get the key at resend.com > API Keys.
+      - key: EMAIL_API_KEY
+        sync: false
+      # Sender shown on every email. Until you verify a domain at
+      # resend.com/domains, keep the default onboarding@resend.dev (test mode
+      # then only delivers to the Resend account owner's inbox).
+      - key: EMAIL_FROM
+        value: "NICC Campus Ministry <onboarding@resend.dev>"
+      # --- Gmail SMTP for local-dev fallback only (SMTP blocked on Render) ---
       # Google App Password (16 chars), NOT the account password.
       - key: GMAIL_USER
         sync: false

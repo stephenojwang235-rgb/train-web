@@ -59,7 +59,9 @@ Manual equivalent (for reference):
 | `SUPABASE_URL` | `https://csipxzqxatixziwxjjes.supabase.co` |
 | `SUPABASE_SERVICE_ROLE_KEY` | *Supabase Dashboard → Project Settings → API Keys → **service_role** (secret). Server-side only; bypasses RLS. Never commit it.* |
 | `SUPABASE_ANON_KEY` | *legacy local-dev fallback only — Render ignores it when the service_role key is set* |
-| `GMAIL_USER` | `stephenojwang235@gmail.com` |
+| `EMAIL_API_KEY` | *⭐ REQUIRED for email. **resend.com → sign up → API Keys → Create API Key → copy the `re_...` value** and paste it here. Free tier = 3,000 emails/month. Without this, OTP/reset emails are never delivered from Render.* |
+| `EMAIL_FROM` | *set by blueprint default: `NICC Campus Ministry <onboarding@resend.dev>`. Keep until you verify your own domain at resend.com/domains (test mode only delivers to the Resend account owner's inbox).* |
+| `GMAIL_USER` | `stephenojwang235@gmail.com` *(local-dev SMTP fallback only — ignored on Render)* |
 | `GMAIL_APP_PASSWORD` | *copy from local `.env` — never commit it* |
 | `ADMIN_EMAIL` | `stephenojwang235@gmail.com` |
 | `ADMIN_PASSWORD` | *copy from local `backend/.env`* |
