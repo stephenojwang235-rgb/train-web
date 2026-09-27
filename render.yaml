@@ -1,0 +1,52 @@
+# ============================================================================
+#  Render blueprint — NICC Campus Ministry API
+# ============================================================================
+# This deploys the Express backend UNCHANGED as a normal long-running Node
+# service. That is deliberate: the API keeps logins in memory, writes the CSV
+# mirror to disk and sends OTP email in the background — none of which survive
+# on a serverless platform, but all of which work perfectly on Render.
+#
+# How to use:
+#   1. Push this repo to GitHub (already done: origin/main).
+#   2. Render Dashboard > New > Blueprint > pick this repo > Apply.
+#   3. Render asks for every variable marked `sync: false` below — paste the
+#      values from your local .env / backend/.env (they are never committed).
+#
+# Secrets are `sync: false` on purpose: the value is entered in the Render
+# dashboard and is NEVER stored in this file or in git.
+# ============================================================================
+services:
+  - type: web
+    name: nicc-campus-api
+    runtime: node
+    plan: free
+    region: frankfurt          # closest Render region to Nairobi
+    rootDir: backend            # the Express app lives in backend/
+    buildCommand: npm install
+    startCommand: npm start     # node server.js  (respects process.env.PORT)
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      - key: NODE_ENV
+        value: production
+      # --- Supabase (cloud database) — the production data store ---
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      # --- Gmail SMTP for OTP / announcement email ---
+      # Google App Password (16 chars), NOT the account password.
+      - key: GMAIL_USER
+        sync: false
+      - key: GMAIL_APP_PASSWORD
+        sync: false
+      # --- First-run admin seed + fallback login ---
+      - key: ADMIN_EMAIL
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      # --- Keep OTP codes off the wire in production ---
+      - key: DEMO_REVEAL_OTP
+        value: "false"

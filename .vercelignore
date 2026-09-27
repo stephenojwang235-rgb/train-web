@@ -1,0 +1,34 @@
+# ============================================================
+#  .vercelignore — what must NEVER be uploaded to Vercel
+# ============================================================
+# The Vercel CLI uploads this folder as-is, so anything secret or
+# personal has to be listed here explicitly.
+
+# --- Secrets (Gmail App Password, admin password, JWT secret) -------------
+.env
+.env.*
+**/.env
+**/.env.*
+!**/.env.example
+
+# --- Personal data ---------------------------------------------------------
+# backend/data/*.csv holds real names, phone numbers, prayer requests and
+# bcrypt password hashes. Supabase is the cloud source of truth, so these
+# files stay on this machine only.
+backend/data/*.csv
+backend/data/**/*.csv
+backend_data.csv
+local-only/
+
+# --- Local artefacts -------------------------------------------------------
+.git
+node_modules
+**/node_modules
+.local-logs/
+*.log
+probe-supabase.js
+
+# --- One-off local exports that must not be served publicly ---------------
+public/backend_data.csv
+public/supabase_tables_csv.zip
+public/nicc_backend_csv_backup/

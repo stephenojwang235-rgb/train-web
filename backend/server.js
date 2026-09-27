@@ -22,7 +22,12 @@ import nodemailer from 'nodemailer'
 import bcrypt from 'bcrypt'
 import {
   isSupabaseConfigured, listUsers, findUserByEmail, insertUser,
-  emailExists, markUserVerified, updateUserPassword,
+  emailExists, markUserVerified, updateUserPassword, updateAdminPassword,
+  listAdmins, insertVisitor, listVisitors, insertSignIn, listSignIns,
+  insertMessage, listMessages, insertFeedback, listFeedback,
+  insertAnnouncement, listAnnouncements, listAnnouncementReads,
+  listAnnouncementReadIdsForUser, markAnnouncementReadRow,
+  insertVerificationCode, findVerificationCodeRow, consumeVerificationCodeRow,
 } from './supabaseClient.js'
 import {
   DATA_DIR, VISITORS_CSV, SIGN_INS_CSV, MESSAGES_CSV, ADMINS_CSV, USERS_CSV, FEEDBACK_CSV, ANNOUNCEMENTS_CSV, VERIFICATION_CODES_CSV, ensureDataFiles,
@@ -266,6 +271,47 @@ async function findDiscipleByEmail(email) {
   return rows.find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail) || null
 }
 
+// ---- Dual-write: local CSV mirror + cloud --------------------------------
+// Every write below goes to the local CSV first (always available, never
+// lost) and then to Supabase when configured. A cloud failure is logged but
+// never fails the request — the CSV copy keeps the data safe — so no record
+// can be missed on either side.
+async function writeBoth(label, csvWrite, cloudWrite) {
+  try {
+    csvWrite()
+  } catch (err) {
+    console.error(`[csv] ${label} write failed:`, err.message)
+    throw err // preserve the old behaviour: a failed CSV write is a 500
+  }
+  if (isSupabaseConfigured && cloudWrite) {
+    try {
+      await cloudWrite()
+    } catch (err) {
+      console.error(`[supabase] ${label} insert FAILED — row kept in CSV only:`, err.message)
+    }
+  }
+}
+
+// Sign-in audit log: CSV mirror + cloud, always both.
+async function logSignIn(name, email) {
+  await writeBoth('sign_ins',
+    () => appendRow(SIGN_INS_CSV, [new Date().toISOString(), name, email]),
+    () => insertSignIn({ name, email }))
+}
+
+// Keep users.csv as a live mirror of the cloud users table (idempotent —
+// never appends a duplicate email), so a later cloud outage still has every
+// account, verified flag and password reset.
+function mirrorUserToCsv({ name, email, passwordHash, campus, isVerified }) {
+  try {
+    const rows = readCsvAsJson(USERS_CSV, ['name', 'email', 'password', 'campus', 'is_verified'])
+    if (rows.some((r) => String(r.email || '').toLowerCase().trim() === String(email).toLowerCase().trim())) return
+    appendRow(USERS_CSV, [name, email, passwordHash, campus, isVerified ? 'true' : 'false'])
+  } catch (err) {
+    console.error('[csv] user mirror failed:', err.message)
+  }
+}
+
 const VERIFICATION_TTL_MS = 15 * 60 * 1000
 function verificationHash(code) {
   return crypto.createHash('sha256').update(String(code)).digest('hex')
@@ -273,48 +319,82 @@ function verificationHash(code) {
 function loadVerificationRecords() {
   try { return readCsvAsJson(VERIFICATION_CODES_CSV, ['id', 'email', 'purpose', 'code_hash', 'expires_at', 'consumed_at', 'created_at']) } catch { return [] }
 }
-function createVerificationCode({ email, purpose }) {
+async function createVerificationCode({ email, purpose }) {
   const cleanEmail = String(email).toLowerCase().trim()
   const code = String(crypto.randomInt(100000, 1000000))
   const now = new Date()
   const record = { id: crypto.randomUUID(), email: cleanEmail, purpose, code_hash: verificationHash(code), expires_at: new Date(now.getTime() + VERIFICATION_TTL_MS).toISOString(), consumed_at: '', created_at: now.toISOString() }
-  appendRow(VERIFICATION_CODES_CSV, [record.id, record.email, record.purpose, record.code_hash, record.expires_at, '', record.created_at])
+  // CSV keeps a local copy for offline recovery; cloud is the primary store.
+  await writeBoth('verification_codes',
+    () => appendRow(VERIFICATION_CODES_CSV, [record.id, record.email, record.purpose, record.code_hash, record.expires_at, '', record.created_at]),
+    () => insertVerificationCode({ id: record.id, email: record.email, purpose: record.purpose, code_hash: record.code_hash, expires_at: record.expires_at, created_at: record.created_at }))
   return { code, record }
 }
-function findVerificationCode({ email, purpose, code }) {
+async function findVerificationCode({ email, purpose, code }) {
   const cleanEmail = String(email).toLowerCase().trim()
   const cleanCode = String(code).trim()
-  const record = loadVerificationRecords().find((r) => r.email === cleanEmail && r.purpose === purpose && !r.consumed_at && new Date(r.expires_at).getTime() > Date.now() && timingSafeEqual(Buffer.from(r.code_hash), Buffer.from(verificationHash(cleanCode))))
+  const codeHash = verificationHash(cleanCode)
+  // Cloud primary: latest unconsumed, unexpired row matching the hash.
+  if (isSupabaseConfigured) {
+    try {
+      const row = await findVerificationCodeRow({ email: cleanEmail, purpose, code_hash: codeHash })
+      if (row) {
+        await consumeVerificationCodeRow(row.id)
+        // Consume the local mirror too when it carries the same id.
+        try { if (loadVerificationRecords().some((r) => r.id === row.id)) updateVerificationCode(VERIFICATION_CODES_CSV, row.id) } catch { /* mirror is best-effort */ }
+        return row
+      }
+      // No cloud match — also check the CSV so a code issued during a cloud
+      // outage still verifies (then consume it in both stores below).
+    } catch (err) {
+      console.error('[supabase] findVerificationCodeRow failed, falling back to CSV:', err.message)
+    }
+  }
+  const record = loadVerificationRecords().find((r) => r.email === cleanEmail && r.purpose === purpose && !r.consumed_at && new Date(r.expires_at).getTime() > Date.now() && timingSafeEqual(Buffer.from(r.code_hash), Buffer.from(codeHash)))
   if (!record) return null
   const rows = loadVerificationRecords()
   const index = rows.findIndex((r) => r.id === record.id)
   if (index >= 0) updateVerificationCode(VERIFICATION_CODES_CSV, record.id)
+  if (isSupabaseConfigured) {
+    try { await consumeVerificationCodeRow(record.id) } catch { /* already consumed in cloud or row missing */ }
+  }
   return record
 }
 function timingSafeEqual(a, b) {
   return a.length === b.length && crypto.timingSafeEqual(a, b)
 }
 
-// admins.csv header: username,email,name,password
+// admins.csv / admins table: username,email,name,password
+// Reads the cloud admins table when configured, else the CSV — both return the
+// same { username, email, name, password } shape (password = bcrypt hash).
+async function loadAdminRows() {
+  if (isSupabaseConfigured) {
+    try {
+      const rows = await listAdmins()
+      if (rows.length) return rows
+    } catch (err) {
+      console.error('[supabase] listAdmins failed, falling back to admins.csv:', err.message)
+    }
+  }
+  try {
+    const rows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
+    if (rows.length) return rows
+  } catch { /* fall through to env seed */ }
+  // Fallback to env on first run if CSV is still empty/untouched.
+  const envEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim()
+  const envPass = process.env.ADMIN_PASSWORD || ''
+  if (envEmail && envPass) {
+    return [{ username: 'admin', email: envEmail, name: 'Admin', password: envPass }]
+  }
+  return []
+}
+
 // Typing exactly "admin" on the login screen routes here.
-function findAdmin({ username = '', email = '', password = '' }) {
+async function findAdmin({ username = '', email = '', password = '' }) {
   const cleanUser = String(username).toLowerCase().trim()
   const cleanEmail = String(email).toLowerCase().trim()
   const pass = String(password)
-  let rows = []
-  try {
-    rows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
-  } catch {
-    rows = []
-  }
-  // Fallback to env on first run if CSV is still empty/untouched.
-  if (!rows.length) {
-    const envEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim()
-    const envPass = process.env.ADMIN_PASSWORD || ''
-    if (envEmail && envPass) {
-      rows = [{ username: 'admin', email: envEmail, name: 'Admin', password: envPass }]
-    }
-  }
+  const rows = await loadAdminRows()
   return rows.find((r) => {
     const rowUser = String(r.username || '').toLowerCase().trim()
     const rowEmail = String(r.email || '').toLowerCase().trim()
@@ -329,19 +409,13 @@ const discipleSessions = new Map() // token -> { email, name, campus, createdAt 
 
 // Check whether an email/username belongs to an Admin (data/admins.csv), regardless
 // of password â€” used at Phase 2 (OTP verify) to grant admin token/route privileges.
-function isAdminEmail(identity) {
+// Check whether an email/username belongs to an Admin (admins table or
+// admins.csv), regardless of password — used at Phase 2 (OTP verify) to grant
+// admin token/route privileges.
+async function isAdminEmail(identity) {
   const clean = String(identity || '').toLowerCase().trim()
   if (!clean) return false
-  let rows = []
-  try {
-    rows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
-  } catch {
-    rows = []
-  }
-  if (!rows.length) {
-    const envEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim()
-    if (envEmail) rows = [{ username: 'admin', email: envEmail, name: 'Admin', password: '' }]
-  }
+  const rows = await loadAdminRows()
   return rows.some((r) => {
     const rowUser = String(r.username || '').toLowerCase().trim()
     const rowEmail = String(r.email || '').toLowerCase().trim()
@@ -383,24 +457,30 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'nicc-campus-backend', time: new Date().toISOString() })
 })
 
-// POST /api/visit-plan -> append to visitors.csv (status = Pending Follow-up)
-app.post('/api/visit-plan', (req, res) => {
+// POST /api/visit-plan -> visitors.csv + cloud visitors row (status = Pending Follow-up)
+app.post('/api/visit-plan', async (req, res) => {
   try {
     const { name = '', email = '', phone = '', campus = '', message = '' } = req.body || {}
     if (!String(name).trim() || !String(email).trim()) {
       return res.status(400).json({ ok: false, error: 'name and email are required' })
     }
     const id = Date.now().toString(36) + crypto.randomBytes(3).toString('hex')
-    appendRow(VISITORS_CSV, [id, new Date().toISOString(), name, email, phone, campus, 'Pending Follow-up'])
+    const nowIso = new Date().toISOString()
+    const cleanMessage = String(message).trim()
+    await writeBoth('visitors',
+      () => appendRow(VISITORS_CSV, [id, nowIso, name, email, phone, campus, 'Pending Follow-up']),
+      () => insertVisitor({ name, email, phone, campus, message: cleanMessage || null, status: 'Pending Follow-up' }))
     // Also log the visitor message so admins can read it later
-    if (message && String(message).trim()) {
+    if (cleanMessage) {
       try {
-        appendRow(MESSAGES_CSV, [new Date().toISOString(), name, email, String(message).trim()])
+        await writeBoth('messages',
+          () => appendRow(MESSAGES_CSV, [nowIso, name, email, cleanMessage]),
+          () => insertMessage({ name, email, message: cleanMessage }))
       } catch (msgErr) {
-        console.error('messages.csv append failed:', msgErr)
+        console.error('messages write failed:', msgErr)
       }
     }
-    if (message) console.log(`[visit-plan] ${name} <${email}>: ${message}`)
+    if (cleanMessage) console.log(`[visit-plan] ${name} <${email}>: ${cleanMessage}`)
     res.status(201).json({ ok: true, id, status: 'Pending Follow-up' })
   } catch (err) {
     console.error('POST /api/visit-plan failed:', err)
@@ -408,35 +488,44 @@ app.post('/api/visit-plan', (req, res) => {
   }
 })
 
-app.get('/api/admin/visitors', requireAdmin, (req, res) => {
+app.get('/api/admin/visitors', requireAdmin, async (req, res) => {
   try {
+    if (isSupabaseConfigured) {
+      try { return res.json(await listVisitors()) } catch (err) { console.error('[supabase] listVisitors failed, falling back to CSV:', err.message) }
+    }
     res.json(readCsvAsJson(VISITORS_CSV, ['id', 'date', 'name', 'email', 'phone', 'campus', 'status']))
   } catch (err) {
     console.error(err)
-    res.status(500).json({ ok: false, error: 'Could not read visitors.csv' })
+    res.status(500).json({ ok: false, error: 'Could not read visitors data' })
   }
 })
 
-app.get('/api/admin/signins', requireAdmin, (req, res) => {
+app.get('/api/admin/signins', requireAdmin, async (req, res) => {
   try {
+    if (isSupabaseConfigured) {
+      try { return res.json(await listSignIns()) } catch (err) { console.error('[supabase] listSignIns failed, falling back to CSV:', err.message) }
+    }
     res.json(readCsvAsJson(SIGN_INS_CSV, ['timestamp', 'name', 'email']))
   } catch (err) {
     console.error(err)
-    res.status(500).json({ ok: false, error: 'Could not read sign_ins.csv' })
+    res.status(500).json({ ok: false, error: 'Could not read sign-ins data' })
   }
 })
 
-app.get('/api/admin/messages', requireAdmin, (req, res) => {
+app.get('/api/admin/messages', requireAdmin, async (req, res) => {
   try {
+    if (isSupabaseConfigured) {
+      try { return res.json(await listMessages()) } catch (err) { console.error('[supabase] listMessages failed, falling back to CSV:', err.message) }
+    }
     res.json(readCsvAsJson(MESSAGES_CSV, ['date', 'name', 'email', 'message']))
   } catch (err) {
     console.error(err)
-    res.status(500).json({ ok: false, error: 'Could not read messages.csv' })
+    res.status(500).json({ ok: false, error: 'Could not read messages data' })
   }
 })
 
 // ---- Announcements: persistent global notices with per-disciple read receipts ----
-function readAnnouncements() {
+function readAnnouncementsFromCsv() {
   return readCsvAsJson(ANNOUNCEMENTS_CSV, ['id', 'message_text', 'created_at', 'user_ids'])
     .map((row) => {
       let userIds = []
@@ -449,12 +538,40 @@ function readAnnouncements() {
     .reverse()
 }
 
-app.get('/api/admin/announcements', requireAdmin, (req, res) => {
+// Cloud or CSV, newest first, always in the API shape {id, message_text,
+// created_at, user_ids[]}. user_ids keeps the legacy 'disciple-<hex>' ids for
+// the admin dashboard count; the cloud keeps the same ids via email mapping.
+async function readAnnouncements() {
+  if (isSupabaseConfigured) {
+    try {
+      const [anns, reads] = await Promise.all([listAnnouncements(), listAnnouncementReads()])
+      const legacyIdsByEmail = new Map()
+      for (const read of reads) {
+        if (!read.email) continue
+        if (!legacyIdsByEmail.has(read.announcement_id)) legacyIdsByEmail.set(read.announcement_id, [])
+        legacyIdsByEmail.get(read.announcement_id).push(discipleUserId(read.email))
+      }
+      return anns
+        .map((a) => ({
+          id: a.id,
+          message_text: a.message,
+          created_at: a.created_at,
+          user_ids: legacyIdsByEmail.get(a.id) || [],
+        }))
+        .reverse()
+    } catch (err) {
+      console.error('[supabase] listAnnouncements failed, falling back to CSV:', err.message)
+    }
+  }
+  return readAnnouncementsFromCsv()
+}
+
+app.get('/api/admin/announcements', requireAdmin, async (req, res) => {
   try {
-    res.json(readAnnouncements())
+    res.json(await readAnnouncements())
   } catch (err) {
     console.error('GET /api/admin/announcements failed:', err)
-    res.status(500).json({ ok: false, error: 'Could not read announcements.csv' })
+    res.status(500).json({ ok: false, error: 'Could not read announcements data' })
   }
 })
 
@@ -485,18 +602,20 @@ async function sendAnnouncementEmails(announcement) {
   return { sent, failed, recipients: recipients.length }
 }
 
-app.post('/api/admin/announcements', requireAdmin, (req, res) => {
+app.post('/api/admin/announcements', requireAdmin, async (req, res) => {
   try {
     const messageText = String(req.body?.message_text || '').trim()
     if (!messageText) return res.status(400).json({ ok: false, error: 'Announcement text is required.' })
     if (messageText.length > 1000) return res.status(400).json({ ok: false, error: 'Announcement must be 1,000 characters or fewer.' })
     const announcement = {
-      id: Date.now().toString(36) + crypto.randomBytes(4).toString('hex'),
+      id: crypto.randomUUID(), // uuid shared by CSV row + cloud row
       message_text: messageText,
       created_at: new Date().toISOString(),
       user_ids: [],
     }
-    appendRow(ANNOUNCEMENTS_CSV, [announcement.id, announcement.message_text, announcement.created_at, '[]'])
+    await writeBoth('announcements',
+      () => appendRow(ANNOUNCEMENTS_CSV, [announcement.id, announcement.message_text, announcement.created_at, '[]']),
+      () => insertAnnouncement({ id: announcement.id, message: announcement.message_text, created_at: announcement.created_at }))
     // Persist first, then email in the background so publishing is not blocked by bulk delivery.
     void sendAnnouncementEmails(announcement).catch((err) => {
       console.error(`[announcement] ${announcement.id} email fan-out failed:`, err)
@@ -508,10 +627,10 @@ app.post('/api/admin/announcements', requireAdmin, (req, res) => {
   }
 })
 
-app.get('/api/announcements', requireDisciple, (req, res) => {
+app.get('/api/announcements', requireDisciple, async (req, res) => {
   try {
     const userId = discipleUserId(req.disciple.email)
-    const announcements = readAnnouncements()
+    const announcements = (await readAnnouncements())
       .map(({ user_ids, ...announcement }) => ({
         ...announcement,
         unread: !user_ids.includes(userId),
@@ -524,8 +643,22 @@ app.get('/api/announcements', requireDisciple, (req, res) => {
   }
 })
 
-app.post('/api/announcements/:id/read', requireDisciple, (req, res) => {
+app.post('/api/announcements/:id/read', requireDisciple, async (req, res) => {
   try {
+    // Cloud path: receipt row in announcement_reads (uuid ids). The CSV copy is
+    // updated too when the id also exists there, so neither store is left behind.
+    if (isSupabaseConfigured) {
+      try {
+        const user = await findDiscipleByEmail(req.disciple.email)
+        if (user?.id) {
+          await markAnnouncementReadRow({ announcementId: req.params.id, userId: user.id })
+          try { markAnnouncementRead(ANNOUNCEMENTS_CSV, req.params.id, discipleUserId(req.disciple.email)) } catch { /* CSV mirror best-effort */ }
+          return res.json({ ok: true })
+        }
+      } catch (err) {
+        console.error('[supabase] markAnnouncementReadRow failed, falling back to CSV:', err.message)
+      }
+    }
     if (!markAnnouncementRead(ANNOUNCEMENTS_CSV, req.params.id, discipleUserId(req.disciple.email))) {
       return res.status(404).json({ ok: false, error: 'Announcement not found.' })
     }
@@ -596,9 +729,9 @@ app.post('/api/otp/verify', async (req, res) => {
     otpStore.delete(cleanEmail)
     const displayName = String(name).trim() || record.name || cleanEmail.split('@')[0]
     try {
-      appendRow(SIGN_INS_CSV, [new Date().toISOString(), displayName, cleanEmail])
+      await logSignIn(displayName, cleanEmail)
     } catch (fileErr) {
-      console.error('sign_ins.csv append failed:', fileErr)
+      console.error('sign-in log write failed:', fileErr)
       return res.status(500).json({ ok: false, error: 'Verified, but could not log sign-in.' })
     }
     res.json({
@@ -646,9 +779,9 @@ app.post('/api/auth/verify-credentials', async (req, res) => {
     const adminIdentity =
       lowerIdentity === 'admin' ||
       lowerIdentity === 'admin@nicc.com' ||
-      Boolean(findAdmin({ email: identity, username: identity, password: pass }))
+      Boolean(await findAdmin({ email: identity, username: identity, password: pass }))
     if (adminIdentity) {
-      const admin = findAdmin({ username: 'admin', email: identity, password: pass })
+      const admin = await findAdmin({ username: 'admin', email: identity, password: pass })
       if (!admin) {
         console.log(`[auth] Admin identity matched but password verification FAILED for: ${lowerIdentity}`)
         return res.status(401).json({ ok: false, error: 'Invalid admin credentials.' })
@@ -782,10 +915,10 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     otpStore.delete(cleanEmail)
 
     // ---- ADMIN OTP verified -> grant full administrative privileges + route to /admin ----
-    if (isAdminEmail(cleanEmail)) {
+    if (await isAdminEmail(cleanEmail)) {
       let admin = null
       try {
-        admin = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
+        admin = (await loadAdminRows())
           .find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail) || null
       } catch { admin = null }
       const adminName = String(admin?.name || record.name || 'Admin').trim() || 'Admin'
@@ -811,11 +944,11 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     const displayName = String(user.name || record.name || '').trim() || cleanEmail.split('@')[0]
     const campus = String(user.campus || 'University of Nairobi - Chiromo Campus').trim()
 
-    // Write the sign-in log to data/sign_ins.csv (matches header: timestamp,name,email).
+    // Write the sign-in log to both the local CSV and the cloud sign_ins table.
     try {
-      appendRow(SIGN_INS_CSV, [new Date().toISOString(), displayName, cleanEmail])
+      await logSignIn(displayName, cleanEmail)
     } catch (fileErr) {
-      console.error('sign_ins.csv append failed:', fileErr)
+      console.error('sign-in log write failed:', fileErr)
       return res.status(500).json({ ok: false, error: 'Verified, but could not log sign-in.' })
     }
 
@@ -847,14 +980,14 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 // ---- Admin login: verifies username/email + password against data/admins.csv ----
 // Unified login sends { username: 'admin', password } for the admin path.
 // NOTE: passwords are NEVER stored in, or returned from, any CSV/log.
-app.post('/api/admin/login', (req, res) => {
+app.post('/api/admin/login', async (req, res) => {
   try {
     const { username = '', email = '', password = '' } = req.body || {}
     const identity = String(username || email || '').trim()
     if (!identity || !String(password)) {
       return res.status(400).json({ ok: false, error: 'Username and password are required.' })
     }
-    const admin = findAdmin({ username: identity, email: identity, password })
+    const admin = await findAdmin({ username: identity, email: identity, password })
     if (!admin) {
       return res.status(401).json({ ok: false, error: 'Invalid admin credentials.' })
     }
@@ -891,10 +1024,10 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'A valid email address is required.' })
     }
 
-    // Search the admins table and the users table (Supabase) for the email.
+    // Search the admins table (cloud or CSV) and the users table for the email.
     let user = null
     let source = null
-    const adminRows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password']) || []
+    const adminRows = await loadAdminRows()
     const adminRow = adminRows.find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail)
     if (adminRow) { user = adminRow; source = 'admin' }
     if (!user) {
@@ -971,17 +1104,40 @@ app.post('/api/auth/reset-password', async (req, res) => {
     // Code is valid â€” hash the new password with bcrypt (salt rounds = 12).
     const hashedPassword = await bcrypt.hash(String(newPassword), 12)
 
-    // Code is valid — write the new bcrypt hash back to the users table
-    // (or the CSV files in the legacy local-only mode).
+    // Code is valid — write the new bcrypt hash back to the admins/users table
+    // (cloud primary) and mirror it into the CSV so both stores stay in sync.
     let success = false
     if (record.role === 'admin') {
       success = updatePasswordCsv(ADMINS_CSV, cleanEmail, hashedPassword, 3)
+      if (isSupabaseConfigured) {
+        try {
+          const cloudOk = await updateAdminPassword(cleanEmail, hashedPassword)
+          if (!cloudOk) console.error('[reset-password] admin row not found in cloud admins table')
+        } catch (updErr) {
+          console.error('[reset-password] updateAdminPassword failed:', updErr.message)
+        }
+      }
     } else if (isSupabaseConfigured) {
       try {
         success = await updateUserPassword(cleanEmail, hashedPassword)
       } catch (updErr) {
         console.error('[reset-password] updateUserPassword failed:', updErr.message)
         success = false
+      }
+      // Mirror the new hash into users.csv (update in place, or append the row).
+      try {
+        if (!updatePasswordCsv(USERS_CSV, cleanEmail, hashedPassword, 2)) {
+          const csvUser = loadDisciplesFromCsv().find((r) => String(r.email || '').toLowerCase().trim() === cleanEmail)
+          mirrorUserToCsv({
+            name: csvUser?.name || 'Disciple',
+            email: cleanEmail,
+            passwordHash: hashedPassword,
+            campus: csvUser?.campus || 'University of Nairobi — Chiromo Campus',
+            isVerified: String(csvUser?.is_verified ?? 'true').toLowerCase() === 'true',
+          })
+        }
+      } catch (mirrorErr) {
+        console.error('[reset-password] users.csv mirror failed:', mirrorErr.message)
       }
     } else {
       success = updatePasswordCsv(USERS_CSV, cleanEmail, hashedPassword, 2)
@@ -1006,7 +1162,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
 async function deliverAuthCode({ email, purpose, name, resend = false }) {
   const subject = purpose === 'signup' ? 'Verify your NICC account' : 'Your NICC Portal Unlock Code'
   const action = purpose === 'signup' ? 'Email verification' : 'Portal unlock'
-  const { code, record } = createVerificationCode({ email, purpose })
+  const { code, record } = await createVerificationCode({ email, purpose })
   const delivery = await sendOtpEmail({ to: email, tag: purpose, subject, text: `Your NICC Campus Ministry ${action.toLowerCase()} code is ${code}. It expires in 15 minutes.`, html: `<div style="font-family:Arial,sans-serif;line-height:1.6"><h2>NICC Campus Ministry</h2><p>Your ${action.toLowerCase()} code is:</p><p style="font-size:28px;font-weight:bold;letter-spacing:6px">${code}</p><p>This code expires in 15 minutes and can only be used once.</p></div>` })
   if (!delivery.ok) return { ok: false, error: 'We could not send the verification email. Please try again shortly.' }
   return { ok: true, message: `${resend ? 'A new code has been sent' : 'Verification code sent'} to your email. It expires in 15 minutes.`, expiresAt: record.expires_at }
@@ -1019,7 +1175,7 @@ app.post('/api/auth/signup', async (req, res) => {
   if (password.length < 6) return res.status(400).json({ ok: false, error: 'Password must be at least 6 characters.' })
   const existing = await findDiscipleByEmail(email)
   if (existing) return res.status(409).json({ ok: false, error: 'An account with this email already exists. Please use Login instead.' })
-  if (readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password']).some((row) => String(row.email || '').toLowerCase().trim() === email)) return res.status(409).json({ ok: false, error: 'This email is reserved. Please use Login instead.' })
+  if ((await loadAdminRows()).some((row) => String(row.email || '').toLowerCase().trim() === email)) return res.status(409).json({ ok: false, error: 'This email is reserved. Please use Login instead.' })
   const signupHash = await bcrypt.hash(password, 12)
   if (isSupabaseConfigured) {
     try {
@@ -1030,6 +1186,7 @@ app.post('/api/auth/signup', async (req, res) => {
       console.error('[signup] insertUser failed:', insErr.message)
       return res.status(500).json({ ok: false, error: 'Could not create the account. Try again.' })
     }
+    mirrorUserToCsv({ name: 'Disciple', email, passwordHash: signupHash, campus: 'University of Nairobi — Chiromo Campus', isVerified: false })
   } else {
     appendRow(USERS_CSV, ['Disciple', email, signupHash, 'University of Nairobi — Chiromo Campus', 'false'])
   }
@@ -1081,23 +1238,24 @@ app.post('/api/auth/portal-unlock', async (req, res) => {
 app.post('/api/auth/verify-signup', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const code = String(req.body?.code || '').trim()
   const user = await findDiscipleByEmail(email)
-  if (!user || !/^\d{6}$/.test(code) || !findVerificationCode({ email, purpose: 'signup', code })) return res.status(400).json({ ok: false, error: 'That code is invalid or expired. Request a new code.' })
+  if (!user || !/^\d{6}$/.test(code) || !(await findVerificationCode({ email, purpose: 'signup', code }))) return res.status(400).json({ ok: false, error: 'That code is invalid or expired. Request a new code.' })
   if (isSupabaseConfigured) {
     try { await markUserVerified(email) } catch (e) { console.error('[verify-signup] markUserVerified failed:', e.message) }
+    try { updateUserVerified(USERS_CSV, email, true) } catch { /* CSV mirror best-effort */ }
   } else {
     updateUserVerified(USERS_CSV, email, true)
   }
   const name = String(user.name || 'Disciple'); const token = crypto.randomBytes(24).toString('hex')
-  discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); appendRow(SIGN_INS_CSV, [new Date().toISOString(), name, email])
+  discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); await logSignIn(name, email)
   res.json({ ok: true, message: 'Account created successfully!', token, user: { id: discipleUserId(email), name, email, campus: user.campus, role: 'disciple' } })
 })
 
 app.post('/api/auth/verify-portal', async (req, res) => {
   const email = String(req.body?.email || '').toLowerCase().trim(); const code = String(req.body?.code || '').trim()
   const user = await findDiscipleByEmail(email)
-  if (!user || !/^\d{6}$/.test(code) || !findVerificationCode({ email, purpose: 'portal', code })) return res.status(400).json({ ok: false, error: 'That unlock code is invalid or expired. Request a new code.' })
+  if (!user || !/^\d{6}$/.test(code) || !(await findVerificationCode({ email, purpose: 'portal', code }))) return res.status(400).json({ ok: false, error: 'That unlock code is invalid or expired. Request a new code.' })
   const name = String(user.name || 'Disciple'); const token = crypto.randomBytes(24).toString('hex')
-  discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); appendRow(SIGN_INS_CSV, [new Date().toISOString(), name, email])
+  discipleSessions.set(token, { email, name, campus: user.campus, createdAt: new Date().toISOString() }); await logSignIn(name, email)
   res.json({ ok: true, token, user: { id: discipleUserId(email), name, email, campus: user.campus, role: 'disciple' } })
 })
 
@@ -1147,14 +1305,9 @@ app.post('/api/auth/register', async (req, res) => {
       })
     }
 
-    // --- Check for duplicate email in the users table (reserved admin emails) ---
-    if (isSupabaseConfigured) {
-      const alreadyRegistered = await emailExists(cleanEmail).catch(() => false)
-      if (alreadyRegistered) {
-        return res.status(409).json({ ok: false, error: 'This email is already registered. Please log in instead.' })
-      }
-    } else {
-      const adminRows = readCsvAsJson(ADMINS_CSV, ['username', 'email', 'name', 'password'])
+    // --- Check the admins table for reserved emails (cloud or CSV) ---
+    {
+      const adminRows = await loadAdminRows()
       const duplicateInAdmins = adminRows.some(
         (r) => String(r.email || '').toLowerCase().trim() === cleanEmail
       )
@@ -1187,6 +1340,7 @@ app.post('/api/auth/register', async (req, res) => {
         console.error('[register] insertUser failed:', insErr.message)
         return res.status(500).json({ ok: false, error: 'Could not create the account. Try again.' })
       }
+      mirrorUserToCsv({ name: cleanName, email: cleanEmail, passwordHash: hashedPassword, campus: defaultCampus, isVerified: false })
     } else {
       appendRow(USERS_CSV, [cleanName, cleanEmail, hashedPassword, defaultCampus])
     }
@@ -1210,8 +1364,8 @@ app.post('/api/auth/register', async (req, res) => {
 })
 
 // ---- Feedback: disciple submits feedback from the portal dashboard ----
-// Saves to data/feedback.csv with timestamp, email, name, category, message.
-app.post('/api/feedback', (req, res) => {
+// Saves to feedback.csv AND the cloud feedback table (timestamp, email, name, category, message).
+app.post('/api/feedback', async (req, res) => {
   try {
     const { email = '', name = '', category = '', message = '' } = req.body || {}
     const cleanEmail = String(email).trim().toLowerCase()
@@ -1229,7 +1383,9 @@ app.post('/api/feedback', (req, res) => {
       return res.status(400).json({ ok: false, error: 'Please write a message.' })
     }
 
-    appendRow(FEEDBACK_CSV, [new Date().toISOString(), cleanEmail, cleanName, cleanCategory, cleanMessage])
+    await writeBoth('feedback',
+      () => appendRow(FEEDBACK_CSV, [new Date().toISOString(), cleanEmail, cleanName, cleanCategory, cleanMessage]),
+      () => insertFeedback({ email: cleanEmail, name: cleanName, category: cleanCategory, message: cleanMessage }))
     console.log(`[feedback] ${cleanCategory} from ${cleanName || cleanEmail}: ${cleanMessage.substring(0, 60)}...`)
     res.status(201).json({ ok: true, message: 'Feedback submitted successfully!' })
   } catch (err) {
@@ -1238,12 +1394,15 @@ app.post('/api/feedback', (req, res) => {
   }
 })
 
-app.get('/api/admin/feedback', requireAdmin, (req, res) => {
+app.get('/api/admin/feedback', requireAdmin, async (req, res) => {
   try {
+    if (isSupabaseConfigured) {
+      try { return res.json(await listFeedback()) } catch (err) { console.error('[supabase] listFeedback failed, falling back to CSV:', err.message) }
+    }
     res.json(readCsvAsJson(FEEDBACK_CSV, ['timestamp', 'email', 'name', 'category', 'message']))
   } catch (err) {
     console.error(err)
-    res.status(500).json({ ok: false, error: 'Could not read feedback.csv' })
+    res.status(500).json({ ok: false, error: 'Could not read feedback data' })
   }
 })
 

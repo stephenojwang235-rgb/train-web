@@ -161,13 +161,50 @@ function parseCsvLine(line) {
   return out
 }
 
+// Split raw CSV text into records. RFC 4180 allows a quoted field to contain
+// commas, escaped quotes AND newlines, so the text cannot be split on lines
+// first — that would turn one multi-line message into several bogus rows.
+function splitCsvRecords(text) {
+  const records = []
+  let record = []
+  let field = ''
+  let inQuotes = false
+  const raw = String(text).replace(/^\uFEFF/, '')
+  for (let i = 0; i < raw.length; i++) {
+    const ch = raw[i]
+    if (inQuotes) {
+      if (ch === '"') {
+        if (raw[i + 1] === '"') { field += '"'; i++ } // escaped quote
+        else inQuotes = false
+      } else field += ch
+    } else if (ch === '"') {
+      inQuotes = true
+    } else if (ch === ',') {
+      record.push(field)
+      field = ''
+    } else if (ch === '\n') {
+      record.push(field)
+      field = ''
+      records.push(record)
+      record = []
+    } else if (ch === '\r') {
+      // CRLF: the following \n ends the record; a bare CR is ignored.
+    } else {
+      field += ch
+    }
+  }
+  if (field !== '' || record.length) { record.push(field); records.push(record) }
+  // Drop blank lines (and a trailing empty record) without touching real rows.
+  return records.filter((r) => r.some((c) => String(c).trim() !== ''))
+}
+
 export function readCsvAsJson(filePath, headers) {
   const raw = fs.readFileSync(filePath, 'utf8')
-  const lines = raw.split(/\r?\n/).filter((l) => l.trim() !== '')
-  if (lines.length <= 1) return []
+  const records = splitCsvRecords(raw)
+  if (records.length <= 1) return []
   const rows = []
-  for (let i = 1; i < lines.length; i++) {
-    const cols = parseCsvLine(lines[i])
+  for (let i = 1; i < records.length; i++) {
+    const cols = records[i]
     const obj = {}
     headers.forEach((h, idx) => { obj[h] = cols[idx] ?? '' })
     rows.push(obj)

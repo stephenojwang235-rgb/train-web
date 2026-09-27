@@ -50,6 +50,12 @@ backend/data/verification_codes.csv
 *.sln
 *.sw?
 
+# Private local dumps and scripts
+local-only/
+probe-supabase.js
+upload-csv-to-supabase.js
+
+
 # Env — never commit any real secrets (Gmail App Password, admin password, JWT secret)
 # Covers the root .env and nested ones such as backend/.env
 .env
@@ -58,3 +64,5 @@ backend/data/verification_codes.csv
 **/.env.*
 !.env.example
 !**/.env.example
+.vercel
+.env*

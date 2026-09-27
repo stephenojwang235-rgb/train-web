@@ -2,7 +2,7 @@ from pathlib import Path
 import qrcode
 from qrcode.constants import ERROR_CORRECT_H
 
-PUBLIC_URL = "http://192.168.100.5:5000"
+PUBLIC_URL = "https://gold-hounds-sing.loca.lt"
 OUTPUT = Path(__file__).with_name("nicc-campus-live-qr.png")
 
 qr = qrcode.QRCode(

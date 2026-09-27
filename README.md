@@ -41,6 +41,13 @@ On Windows you can instead double-click **`Start NICC.bat`** or **`start-local.b
 | `/` | public | Home — hero, service times, directions |
 | `/about` | public | About the ministry |
 | `/contact` | public | Plan a Visit form + leader contacts |
+
+## Live Deployment
+
+- **Production Frontend (Vercel):** [https://ignited-campus-ministry-nairobi.vercel.app](https://ignited-campus-ministry-nairobi.vercel.app) (also aliased: `https://train-web-one.vercel.app`)
+- **Production Backend (Render):** `https://nicc-campus-api.onrender.com`
+- **Deployment & Architecture Documentation:** [`DEPLOYMENT.md`](./DEPLOYMENT.md)
+
 | `/login` | public | ONE unified login / sign-up / forgot-password surface |
 | `/portal` | private (disciple) | Disciple portal |
 | `/profile` | private (any user) | Profile |
