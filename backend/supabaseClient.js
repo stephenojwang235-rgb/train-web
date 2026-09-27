@@ -1,11 +1,14 @@
 // ---- Supabase data layer ----------------------------------------------------
 // Credentials come from the environment only; nothing is hard-coded here.
-//   SUPABASE_URL       -> Project Settings > Data API
-//   SUPABASE_ANON_KEY  -> Project Settings > Data API > anon public key
+//   SUPABASE_URL             -> Project Settings > Data API
+//   SUPABASE_SERVICE_ROLE_KEY -> Project Settings > API Keys > service_role
+//                                (secret: server-side only, bypasses RLS)
+//   SUPABASE_ANON_KEY        -> legacy fallback (publishable key); kept only so
+//                                older local .env files keep working.
 //
-// The backend is the ONLY thing that talks to the database. The browser never
-// receives these keys, and Row Level Security (see supabase/schema.sql) keeps
-// the anon key from being useful to anyone who finds it.
+// This module runs on the private Express server (local :5000 or Render), NEVER
+// in the browser, so it may use the privileged service_role key. The frontend
+// never receives any Supabase key.
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import dotenv from 'dotenv'
@@ -23,26 +26,36 @@ try {
 dotenv.config()
 
 const SUPABASE_URL = (process.env.SUPABASE_URL || '').trim()
-const SUPABASE_ANON_KEY = (process.env.SUPABASE_ANON_KEY || '').trim()
+// Service-role key first: the backend is a trusted private server, so it
+// bypasses Row Level Security by design. Anon key is only a local-dev fallback.
+const SUPABASE_KEY = (
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+  || process.env.SUPABASE_ANON_KEY
+  || ''
+).trim()
+const USING_SERVICE_ROLE = Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY)
 
 /**
- * True when both Supabase variables are present. The server uses this to decide
- * between the cloud store and the legacy CSV store, so an unconfigured
- * deployment keeps working exactly as it did before.
+ * True when the Supabase URL plus EITHER key (service_role preferred, anon
+ * fallback) is present. The server uses this to decide between the cloud
+ * store and the legacy CSV store, so an unconfigured deployment keeps
+ * working exactly as it did before.
  */
-export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_ANON_KEY)
+export const isSupabaseConfigured = Boolean(SUPABASE_URL && SUPABASE_KEY)
 
 export const supabase = isSupabaseConfigured
-  ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+  ? createClient(SUPABASE_URL, SUPABASE_KEY, {
       auth: { persistSession: false, autoRefreshToken: false },
     })
   : null
 
 if (isSupabaseConfigured) {
-  console.log('✓ NICC Supabase: cloud database connected')
+  console.log(
+    `✓ NICC Supabase: cloud database connected (${USING_SERVICE_ROLE ? 'service_role — RLS bypassed' : 'anon key — subject to RLS policies'})`
+  )
 } else {
   console.log(
-    'NICC Supabase NOT configured (missing SUPABASE_URL or SUPABASE_ANON_KEY in .env) — falling back to local CSV storage.'
+    'NICC Supabase NOT configured (missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY/SUPABASE_ANON_KEY in .env) — falling back to local CSV storage.'
   )
 }
 

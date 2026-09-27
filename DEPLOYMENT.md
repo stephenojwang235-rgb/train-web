@@ -57,7 +57,8 @@ Manual equivalent (for reference):
 | Variable | Value |
 |---|---|
 | `SUPABASE_URL` | `https://csipxzqxatixziwxjjes.supabase.co` |
-| `SUPABASE_ANON_KEY` | `sb_publishable_UKFtBuxIKde0wFpykHESOA_ZpetNySU` |
+| `SUPABASE_SERVICE_ROLE_KEY` | *Supabase Dashboard → Project Settings → API Keys → **service_role** (secret). Server-side only; bypasses RLS. Never commit it.* |
+| `SUPABASE_ANON_KEY` | *legacy local-dev fallback only — Render ignores it when the service_role key is set* |
 | `GMAIL_USER` | `stephenojwang235@gmail.com` |
 | `GMAIL_APP_PASSWORD` | *copy from local `.env` — never commit it* |
 | `ADMIN_EMAIL` | `stephenojwang235@gmail.com` |

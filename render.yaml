@@ -32,8 +32,14 @@ services:
       - key: NODE_ENV
         value: production
       # --- Supabase (cloud database) — the production data store ---
+      # Service-role key: SECRET, server-side only. It bypasses RLS by design,
+      # so the private backend is never blocked by the strict schema.sql policies.
+      # Find it at: Supabase Dashboard > Project Settings > API Keys > service_role.
       - key: SUPABASE_URL
         sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      # Legacy anon key kept for local-dev parity (Render never reads it now).
       - key: SUPABASE_ANON_KEY
         sync: false
       # --- Gmail SMTP for OTP / announcement email ---
