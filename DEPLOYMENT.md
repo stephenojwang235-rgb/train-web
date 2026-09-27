@@ -37,6 +37,12 @@ deployed site would call `/api/*` on the Vercel domain and 404. Verified inlinin
 
 ## Part B — Render (backend)
 
+**Status: ✅ DONE (2026-09-27).** Service `nicc-campus-api`
+(`srv-daskpo3bc2fs73fn17ng`, Frankfurt, Node 22, free plan) was created via the
+Render REST API with all 12 env vars set. First deploy went **live** on creation;
+auto-deploy tracks `main`. **Live: `https://nicc-campus-api.onrender.com`.**
+
+Manual equivalent (for reference):
 ### 1. Create the service
 1. Sign in at [dashboard.render.com](https://dashboard.render.com) (GitHub sign-in is easiest).
 2. **New → Blueprint →** connect `github.com/stephenojwang235-rgb/train-web`.
@@ -70,7 +76,16 @@ Put that exact value into Vercel as `VITE_API_URL`.
 
 ## Part C — Post-deploy verification
 
+**Verified live (2026-09-27):**
+
 ```
+https://nicc-campus-api.onrender.com/api/health   → 200 {"ok":true,"service":"nicc-campus-backend"}
+POST /api/visit-plan (public, test record)        → 201 {"ok":true,"id":"muk2pz7g39af3c","status":"Pending Follow-up"}
+POST /api/admin/login (real admin creds)          → 200 {"ok":true,"token":"...","admin":{...}}
+All 12 env vars confirmed set via Render API      → SUPABASE_*, GMAIL_*, EMAIL_HOST/PORT/SECURE, ADMIN_*, NODE_*, DEMO_REVEAL_OTP=false
+```
+
+Remaining manual checks on the site itself:
 https://<api>.onrender.com/api/health   → {"ok":true,"service":"nicc-campus-backend"}
 https://<site>.vercel.app/              → site loads
 https://<site>.vercel.app/login         → admin login completes (Phase 1 + 2)
