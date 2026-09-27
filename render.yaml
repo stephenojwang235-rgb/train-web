@@ -42,6 +42,13 @@ services:
         sync: false
       - key: GMAIL_APP_PASSWORD
         sync: false
+      # Same SMTP transport that is confirmed working locally (465 + SSL).
+      - key: EMAIL_HOST
+        value: "smtp.gmail.com"
+      - key: EMAIL_PORT
+        value: "465"
+      - key: EMAIL_SECURE
+        value: "true"
       # --- First-run admin seed + fallback login ---
       - key: ADMIN_EMAIL
         sync: false
