@@ -1031,7 +1031,11 @@ app.post('/api/auth/forgot-password', async (req, res) => {
       if (discipleRow) { user = discipleRow; source = 'disciple' }
     }
     if (!user) {
-      return res.status(404).json({ ok: false, error: `No account found for ${cleanEmail}. Please check your email or contact a campus leader.` })
+      // 400 (not 404): the route exists, so a 404 here would be indistinguishable
+      // from a genuinely missing endpoint and would surface as
+      // "Endpoint not found (404)" in the client. 400 matches the other
+      // validation errors below and lets the real message reach the user.
+      return res.status(400).json({ ok: false, error: `No account found for ${cleanEmail}. Please check your email or contact a campus leader.` })
     }
 
     const displayName = String(user.name || user.username || 'User').trim() || 'User'

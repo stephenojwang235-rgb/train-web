@@ -48,8 +48,14 @@ export async function apiPost(path, body, options = {}) {
   }
   const data = await res.json().catch(() => ({}))
   if (!res.ok) {
+    // Prefer the server's own message: the API legitimately answers 404 with a
+    // meaningful error (e.g. "No account found for you@example.com"), and a 400
+    // with a validation message. Only fall back to the generic wording when the
+    // response carried no usable message at all (i.e. a truly missing route).
+    const serverMessage = typeof data?.error === 'string' ? data.error.trim() : ''
+    if (serverMessage) throw new Error(serverMessage)
     if (res.status === 404) throw new Error(`Endpoint not found (404): ${path}.`)
-    throw new Error(data.error || `Request failed (${res.status})`)
+    throw new Error(`Request failed (${res.status})`)
   }
   return data
 }
