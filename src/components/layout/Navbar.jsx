@@ -40,6 +40,10 @@ export default function Navbar() {
           <img
             src="/logo.png"
             alt="NICC shield logo"
+            width={48}
+            height={48}
+            loading="lazy"
+            decoding="async"
             className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl object-cover ring-1 ring-slate-200 bg-white"
           />
           <span className="leading-tight">

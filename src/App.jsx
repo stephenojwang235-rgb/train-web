@@ -1,18 +1,21 @@
+import { Suspense, lazy } from 'react'
 import { Routes, Route, Navigate } from 'react-router-dom'
 import Layout from './components/layout/Layout.jsx'
 import ProtectedRoute from './components/common/ProtectedRoute.jsx'
+import PageLoader from './components/common/PageLoader.jsx'
 
-// Public views
-import Home from './views/public/Home.jsx'
-import About from './views/public/About.jsx'
-import Login from './views/public/Login.jsx'
-import Contact from './views/public/Contact.jsx'
-import NotFound from './views/public/NotFound.jsx'
-
-// Private views (single surfaces only — no duplicate dashboards)
-import Portal from './views/private/Portal.jsx'
-import Profile from './views/private/Profile.jsx'
-import AdminDashboard from './views/private/AdminDashboard.jsx'
+// Route-level code splitting: the landing bundle only ships Layout + Home.
+// Login/Contact/About/Portal/Profile/AdminDashboard load on demand, so the
+// first JS download on mobile stays small. ProtectedRoute must stay eager —
+// it gates every private route below.
+const Home = lazy(() => import('./views/public/Home.jsx'))
+const About = lazy(() => import('./views/public/About.jsx'))
+const Login = lazy(() => import('./views/public/Login.jsx'))
+const Contact = lazy(() => import('./views/public/Contact.jsx'))
+const NotFound = lazy(() => import('./views/public/NotFound.jsx'))
+const Portal = lazy(() => import('./views/private/Portal.jsx'))
+const Profile = lazy(() => import('./views/private/Profile.jsx'))
+const AdminDashboard = lazy(() => import('./views/private/AdminDashboard.jsx'))
 
 /**
  * Single login surface + role-based private areas:
@@ -26,7 +29,8 @@ import AdminDashboard from './views/private/AdminDashboard.jsx'
 export default function App() {
   return (
     <Layout>
-      <Routes>
+      <Suspense fallback={<PageLoader label="Loading page…" />}>
+        <Routes>
         {/* Required public routes */}
         <Route path="/" element={<Home />} />
         <Route path="/about" element={<About />} />
@@ -79,6 +83,7 @@ export default function App() {
 
         <Route path="*" element={<NotFound />} />
       </Routes>
+      </Suspense>
     </Layout>
   )
 }

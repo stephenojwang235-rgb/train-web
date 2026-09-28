@@ -11,10 +11,16 @@ export default function Hero({ title, subtitle, primaryCta, secondaryCta }) {
         }}
       />
       <div className="relative container-shell py-16 sm:py-24 lg:py-28 text-center">
-        {/* Main NICC shield logo */}
+        {/* Main NICC shield logo — explicit dimensions reserve layout space
+            (no CLS shift on slow mobile); eager + high priority since it is
+            above the fold on every public page. */}
         <img
           src="/logo.png"
           alt="Nairobi International Christian Church shield logo"
+          width={240}
+          height={240}
+          fetchpriority="high"
+          decoding="async"
           className="w-40 sm:w-52 lg:w-60 h-auto mx-auto mb-8 drop-shadow-[0_20px_50px_rgba(245,158,11,0.35)]"
         />
         <p className="inline-flex items-center gap-2 text-xs sm:text-sm font-bold uppercase tracking-[0.2em] text-amber-300 bg-white/10 px-4 py-2 rounded-full mb-6">

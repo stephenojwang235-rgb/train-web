@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import SectionHeading from '../../components/common/SectionHeading.jsx'
 import Card from '../../components/common/Card.jsx'
 import Button from '../../components/common/Button.jsx'
+import { Spinner } from '../../components/common/PageLoader.jsx'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { apiGet, apiPost } from '../../utils/api.js'
 
@@ -234,8 +235,10 @@ export default function Portal() {
                 {feedbackSuccess}
               </p>
             )}
-            <Button type="submit" disabled={feedbackBusy}>
-              {feedbackBusy ? 'Submitting…' : 'Submit Feedback'}
+            <Button type="submit" disabled={feedbackBusy} aria-busy={feedbackBusy}>
+              {feedbackBusy
+                ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Submitting…</span>)
+                : 'Submit Feedback'}
             </Button>
           </form>
         </Card>

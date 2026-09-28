@@ -8,6 +8,18 @@
       name="description"
       content="Nairobi International Christian Church Campus Ministry — Faith, Fellowship and Purpose for university students in Nairobi."
     />
+    <!-- Preconnect to the cloud API so the first fetch skips DNS+TLS setup. -->
+    <link rel="preconnect" href="https://nicc-campus-api.onrender.com" crossorigin />
+    <link rel="dns-prefetch" href="https://nicc-campus-api.onrender.com" />
+    <!-- Preload the mobile hero image (LCP) so it starts before the JS bundle. -->
+    <link
+      rel="preload"
+      as="image"
+      href="/images/campus-homepage-480.webp"
+      imagesrcset="/images/campus-homepage-480.webp 480w, /images/campus-homepage-768.webp 768w, /images/campus-homepage-1054.webp 1054w"
+      imagesizes="100vw"
+      fetchpriority="high"
+    />
     <title>NICC Campus Ministry | Faith, Fellowship & Purpose</title>
     <link
       rel="stylesheet"

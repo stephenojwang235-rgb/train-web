@@ -4,6 +4,7 @@ import Card from '../../components/common/Card.jsx'
 import Button from '../../components/common/Button.jsx'
 import { useAuth } from '../../context/AuthContext.jsx'
 import { apiPost } from '../../utils/api.js'
+import { Spinner } from '../../components/common/PageLoader.jsx'
 
 // Broad email format check that accepts ANY valid provider domain — educational
 // (.ac.ke/.edu/.edu.au), corporate, custom, Outlook/Hotmail/Yahoo/Gmail etc.
@@ -273,6 +274,10 @@ export default function Login() {
         <div className="text-center mb-8">
           <img
             src="/logo.png" alt="NICC Campus Ministry logo"
+            width={128}
+            height={128}
+            loading="lazy"
+            decoding="async"
             className="mx-auto w-28 sm:w-32 mb-4 drop-shadow"
           />
           <p className="text-xs sm:text-sm font-bold uppercase tracking-[0.2em] text-blue-700 mb-3">
@@ -376,8 +381,8 @@ export default function Login() {
                   {info}
                 </p>
               )}
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? 'Verifying…' : 'Next'}
+              <Button type="submit" disabled={busy} className="w-full" aria-busy={busy}>
+                {busy ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Verifying…</span>) : 'Next'}
               </Button>
               <p className="text-center text-sm text-slate-500">
                 Admin? Use{' '}
@@ -416,8 +421,10 @@ export default function Login() {
                   {info}
                 </p>
               )}
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? 'Creating Account…' : 'Create Account'}
+              <Button type="submit" disabled={busy} className="w-full" aria-busy={busy}>
+                {busy
+                  ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Creating Account…</span>)
+                  : 'Create Account'}
               </Button>
             </form>
           )}
@@ -463,8 +470,10 @@ export default function Login() {
                   {info}
                 </p>
               )}
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? 'Verifying…' : 'Verify & Enter Portal'}
+              <Button type="submit" disabled={busy} className="w-full" aria-busy={busy}>
+                {busy
+                  ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Verifying…</span>)
+                  : 'Verify & Enter Portal'}
               </Button>
               <button type="button" onClick={handleResendCode} disabled={busy}
                 className="mx-auto block text-sm font-bold text-blue-700 hover:underline disabled:opacity-50">
@@ -507,8 +516,10 @@ export default function Login() {
                   {info}
                 </p>
               )}
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? 'Sending…' : 'Request Reset Code'}
+              <Button type="submit" disabled={busy} className="w-full" aria-busy={busy}>
+                {busy
+                  ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Sending…</span>)
+                  : 'Request Reset Code'}
               </Button>
               <button
                 type="button"
@@ -584,8 +595,10 @@ export default function Login() {
                   {info}
                 </p>
               )}
-              <Button type="submit" disabled={busy} className="w-full">
-                {busy ? 'Resetting…' : 'Reset Password'}
+              <Button type="submit" disabled={busy} className="w-full" aria-busy={busy}>
+                {busy
+                  ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Resetting…</span>)
+                  : 'Reset Password'}
               </Button>
               <button
                 type="button"

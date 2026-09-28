@@ -59,12 +59,57 @@ body {
   color: var(--color-navy-950);
 }
 
+/* ---- NICC loading indicators (pure CSS, ships in the landing bundle) ----
+   Used by <Spinner/>, <LoadingOverlay/>, <PageLoader/> and the busy buttons.
+   The ring uses currentColor so it inherits the surrounding text color. */
+.nicc-spinner {
+  display: inline-block;
+  border-radius: 9999px;
+  border: 3px solid rgb(203 213 225 / 0.55);
+  border-top-color: currentColor;
+  animation: nicc-spin 0.75s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes nicc-spin {
+  to { transform: rotate(360deg); }
+}
+.nicc-loading-overlay {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 3.5rem 1.5rem;
+  text-align: center;
+  color: #1d4ed8;
+}
+.nicc-loading-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  color: #0f172a;
+}
+.nicc-loading-sub {
+  font-size: 0.8rem;
+  color: #64748b;
+  max-width: 22rem;
+}
+@media (prefers-reduced-motion: reduce) {
+  .nicc-spinner { animation-duration: 2s; }
+}
+
 /* Reusable layout helper */
-/* Fullscreen campus image homepage */
+/* Fullscreen campus image homepage — responsive + mobile-first.
+ *
+ * The <picture> element in Home.jsx picks the right file for the viewport:
+ *   ≤480px  → campus-homepage-480.webp  (~74 KB)
+ *   ≤768px  → campus-homepage-768.webp  (~144 KB)
+ *   wider   → campus-homepage-1054.webp (~205 KB)
+ * WebP-first with JPEG fallback; the CSS background-image below only fires if
+ * <picture> is unsupported (ancient browsers) or the <img> fails to load. */
 .homepage-background {
   min-height: calc(100vh - 4rem);
   background-color: #0e2039;
-  background-image: url('/images/campus-homepage.jpeg');
+  background-image: url('/images/campus-homepage-768.jpg');
   background-position: center;
   background-repeat: no-repeat;
   background-size: cover;

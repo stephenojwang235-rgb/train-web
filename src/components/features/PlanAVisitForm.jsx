@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { apiPost } from '../../utils/api.js'
+import { Spinner } from '../../components/common/PageLoader.jsx'
 
 export const UON_CHIROMO = 'University of Nairobi (UoN) Chiromo Campus'
 export const OTHER_VISITOR = 'Other / General Visitor'
@@ -51,7 +52,7 @@ export default function PlanAVisitForm() {
       })
       setSent(true)
     } catch (err) {
-      setServerError(err.message || 'Could not reach server. Is the backend on :5000?')
+      setServerError(err.message || 'Could not reach the cloud server. Check your connection and try again.')
     } finally {
       setSaving(false)
     }
@@ -108,8 +109,10 @@ export default function PlanAVisitForm() {
         {errors.campus && <p className="mt-1.5 text-xs font-medium text-red-600">{errors.campus}</p>}
       </div>
       {serverError && (<p role="alert" className="rounded-xl bg-red-50 px-4 py-2.5 text-sm text-red-700">{serverError}</p>)}
-      <button type="submit" disabled={saving} className="w-full rounded-full bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition-all duration-200 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:text-base">
-        {saving ? 'Sending…' : 'Plan My Visit'}
+      <button type="submit" disabled={saving} aria-busy={saving} className="w-full rounded-full bg-blue-700 px-6 py-3 text-sm font-semibold text-white shadow-lg shadow-blue-700/20 transition-all duration-200 hover:bg-blue-800 focus:outline-none focus:ring-2 focus:ring-blue-600 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60 sm:text-base">
+        {saving
+          ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Sending…</span>)
+          : 'Plan My Visit'}
       </button>
     </form>
   )

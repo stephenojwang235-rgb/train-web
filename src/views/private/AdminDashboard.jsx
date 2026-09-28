@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import SectionHeading from '../../components/common/SectionHeading.jsx'
 import Card from '../../components/common/Card.jsx'
 import Button from '../../components/common/Button.jsx'
+import { Spinner, LoadingOverlay } from '../../components/common/PageLoader.jsx'
 import { apiGetAdmin, authHeaders } from '../../utils/adminApi.js'
 import { apiPost } from '../../utils/api.js'
 import { useAuth } from '../../context/AuthContext.jsx'
@@ -140,7 +141,7 @@ export default function AdminDashboard() {
       setFeedback(Array.isArray(f) ? f : [])
       setAnnouncements(Array.isArray(a) ? a : [])
     } catch (err) {
-      setError(err.message || 'Could not load data. Is backend on :5000?')
+      setError(err.message || 'Could not load data from the cloud server. Check your connection and tap Refresh.')
     } finally {
       setLoading(false)
     }
@@ -209,11 +210,21 @@ export default function AdminDashboard() {
           </button>
         ))}
         <div className="ml-auto flex gap-2">
-          <Button variant="ghost" size="sm" onClick={loadData} disabled={loading}>{loading ? 'Refreshing…' : 'Refresh'}</Button>
+          <Button variant="ghost" size="sm" onClick={loadData} disabled={loading} aria-busy={loading}>
+            {loading ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Refreshing…</span>) : 'Refresh'}
+          </Button>
           <Button variant="dark" size="sm" onClick={handleLock}>Lock dashboard</Button>
         </div>
       </div>
-      {error && <p className="mb-4 text-sm bg-red-50 text-red-700 px-4 py-2.5 rounded-xl">{error}</p>}
+      {error && <p role="alert" className="mb-4 text-sm bg-red-50 text-red-700 px-4 py-2.5 rounded-xl">{error}</p>}
+      {/* Immediate loading state: the 5 admin fetches hit the Render cloud,
+          which can take ~30–50 s on a cold start. This overlay renders on the
+          same frame as navigation so users never see a blank page. */}
+      {loading && !error && (
+        <Card hover={false} className="p-6 sm:p-7 mb-6">
+          <LoadingOverlay label="Loading dashboard data…" sub="Contacting the cloud server. First load can take up to a minute on a cold start — please wait." />
+        </Card>
+      )}
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="lg:col-span-2">
           <Card hover={false} className="p-6 sm:p-7">
@@ -229,7 +240,11 @@ export default function AdminDashboard() {
                     <p className="mt-1 text-right text-xs text-slate-400">{announcementText.length} / 1,000</p>
                   </div>
                   {publishMessage && <p role="status" className="rounded-xl border border-blue-100 bg-blue-50 px-4 py-3 text-sm text-blue-800">{publishMessage}</p>}
-                  <Button type="submit" disabled={publishing}>{publishing ? 'Publishing…' : 'Publish Announcement'}</Button>
+                  <Button type="submit" disabled={publishing} aria-busy={publishing}>
+                    {publishing
+                      ? (<span className="inline-flex items-center gap-2"><Spinner size="sm" />Publishing…</span>)
+                      : 'Publish Announcement'}
+                  </Button>
                 </form>
                 <div className="mt-8 border-t border-slate-100 pt-6">
                   <h3 className="font-extrabold text-slate-900">Published announcements</h3>
